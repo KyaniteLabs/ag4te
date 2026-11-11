@@ -356,6 +356,27 @@ def candidate_repos(
 
 # --------------------------------------------------------------------------- DevArch CLI
 
+# Package-manager and network settings that reach the child. uvx fetches DevArch and runs it in
+# one process, so these cannot be kept to a separate fetch step: the registry and proxy URLs
+# (which may embed credentials) are visible to the DevArch code that runs. Code-injection
+# variables (PYTHONSTARTUP, PYTHONPATH, NODE_OPTIONS, LD_PRELOAD, ...) are never passed.
+FETCH_ENV = (
+    "UV_CACHE_DIR",
+    "UV_PYTHON",
+    "UV_INDEX_URL",
+    "UV_EXTRA_INDEX_URL",
+    "PIP_INDEX_URL",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+)
+
 _ENV_ALLOW = (
     "PATH",
     "HOME",
@@ -377,21 +398,7 @@ _ENV_ALLOW = (
     "XDG_CACHE_HOME",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
-    "UV_CACHE_DIR",
-    "UV_PYTHON",
-    "UV_INDEX_URL",
-    "UV_EXTRA_INDEX_URL",
-    "PIP_INDEX_URL",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "REQUESTS_CA_BUNDLE",
-)
+) + FETCH_ENV
 
 
 def _scrubbed_env(settings: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
