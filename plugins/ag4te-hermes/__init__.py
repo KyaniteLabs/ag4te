@@ -2517,7 +2517,8 @@ TOOL_SCHEMA = {
     "name": "ag4te_dig",
     "description": (
         "Read a finished AG4TE dig: a repository's commit history summarised (commits, active days, "
-        "kinds of work, eras, quiet gaps, practice health). Without a project, lists the digs. Read-only. "
+        "kinds of work, eras, quiet gaps, practice health). To read a dig the project argument is required: "
+        "\"epoch dig\" means project 'epoch'. Leave project out only to list the digs. Read-only. "
         "The reply is a short summary; pass detail=full for eras, signals, authors and the rest."
     ),
     "parameters": {
@@ -2564,7 +2565,7 @@ def _cap_strings(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_cap_strings(v) for v in obj]
     if isinstance(obj, dict):
-        return {k: _cap_strings(v) for k, v in obj.items()}
+        return {_untrusted(k) if isinstance(k, str) else k: _cap_strings(v) for k, v in obj.items()}
     return obj
 
 

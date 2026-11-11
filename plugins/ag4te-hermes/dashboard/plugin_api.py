@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import sys
 import threading
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, Body, HTTPException, Query
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 _load_lock = threading.Lock()
@@ -34,9 +36,11 @@ class _HostConfig:
 
 
 def _unreadable(exc: BaseException) -> HTTPException:
+    # The cause can hold a home path, so it goes to the log, not to the HTTP client.
+    logger.warning("AG4TE cannot read its settings from Hermes: %s", exc)
     return HTTPException(
         status_code=503,
-        detail=f"AG4TE cannot read its settings from Hermes ({exc}); not using defaults",
+        detail="AG4TE cannot read its settings from Hermes; not using defaults. See the Hermes log.",
     )
 
 
