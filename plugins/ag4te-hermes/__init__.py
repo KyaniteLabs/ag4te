@@ -30,6 +30,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -695,6 +696,27 @@ def _iso(s: str) -> datetime:
     return datetime.fromisoformat(s[:-1] + "+00:00" if s.endswith(("Z", "z")) else s)
 
 
+def read_git_file(path: Path, chunk: int = 1 << 20) -> List[Dict[str, Any]]:
+    """Commits from a git log file, read one chunk at a time so the whole text is never in memory."""
+    commits: List[Dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            tail = ""
+            while True:
+                block = fh.read(chunk)
+                parts = (tail + block).split("\x1e")
+                tail = parts.pop() if block else ""
+                if parts:
+                    commits.extend(parse_git("\x1e".join(parts)))
+                if not block:
+                    break
+            if tail:
+                commits.extend(parse_git(tail))
+    except OSError:
+        return []
+    return commits
+
+
 def parse_git(text: str) -> List[Dict[str, Any]]:
     """Commits from ``ag4te-git.txt``: identities, both dates, parents, co-authors, paths."""
     commits: List[Dict[str, Any]] = []
@@ -723,7 +745,7 @@ def parse_git(text: str) -> List[Dict[str, Any]]:
             if len(parts) == 3:
                 a = int(parts[0]) if parts[0].isdigit() else 0
                 d = int(parts[1]) if parts[1].isdigit() else 0
-                paths.append((parts[2], a, d))
+                paths.append((sys.intern(parts[2]), a, d))
                 ins += a
                 dels += d
         commits.append(
@@ -732,8 +754,8 @@ def parse_git(text: str) -> List[Dict[str, Any]]:
                 "parents": f[1].split(),
                 "dt": adt,
                 "cdt": cdt,
-                "name": f[4].strip(),
-                "email": f[5].strip(),
+                "name": sys.intern(f[4].strip()),  # a few authors repeat across every commit
+                "email": sys.intern(f[5].strip()),
                 "msg": f[8].strip(),
                 "co": co,
                 "files": len(paths),
@@ -1236,10 +1258,7 @@ def summarize(
     repo_doc = _read_json(data / REPO_FILE)
     repo_doc = repo_doc if isinstance(repo_doc, dict) else {}
     source = "git"
-    try:
-        commits = parse_git((data / GIT_FILE).read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        commits = []
+    commits = read_git_file(data / GIT_FILE)
     has_stats = bool(commits)
     if not commits:
         source = "devarch"

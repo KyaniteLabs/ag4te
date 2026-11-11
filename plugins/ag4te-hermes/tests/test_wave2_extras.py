@@ -1,5 +1,6 @@
 """Wave 2 extras: X-SHLEX, A-tz, A-inject, A-perf."""
 import json
+import tracemalloc
 
 from test_summary import ag, make_project
 
@@ -44,3 +45,31 @@ def test_tool_caps_every_string_in_a_full_reply(monkeypatch):
     monkeypatch.setattr(ag, "_on_gateway", lambda: False)
     out = json.loads(ag._tool({"project": "demo", "detail": "full"}))
     assert len(out["authors"][0]["name"]) <= ag.TOOL_TEXT_CAP
+
+
+# ---- A-perf
+def _write_log(path, commits=50_000):
+    with open(path, "w", encoding="utf-8") as fh:
+        for i in range(commits):
+            day = 1 + i % 28
+            fh.write(
+                f"\x1e{i:040x}\x1f\x1f2026-03-{day:02d}T{i % 24:02d}:10:00-07:00\x1f"
+                f"2026-03-{day:02d}T{i % 24:02d}:10:00-07:00\x1fAda\x1fada@example.com\x1fAda\x1f"
+                f"ada@example.com\x1ffix: change {i}\x1f\n\n")
+            for j in range(4):
+                fh.write(f"{j + 1}\t{j}\tsrc/module_{(i + j) % 300}/file_{j}.py\n")
+
+
+def test_summarize_streams_a_50k_commit_log(tmp_path):
+    pdir = tmp_path / "projects" / "big"
+    (pdir / "data").mkdir(parents=True)
+    _write_log(pdir / "data" / ag.GIT_FILE)
+    tracemalloc.start()
+    out = ag.summarize(pdir)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert out["commit_count"] == 50_000
+    assert peak < PEAK_LIMIT, f"peak {peak / 1e6:.0f} MB"
+
+
+PEAK_LIMIT = 95_000_000  # before streaming and interning this log peaked near 115 MB
