@@ -2603,14 +2603,22 @@ def _cap_strings(obj: Any, cap: int = TOOL_TEXT_CAP, more: str = _MORE_BRIEF) ->
         return [_cap_strings(v, cap, more) for v in obj]
     if isinstance(obj, dict):
         out: Dict[Any, Any] = {}
+        seen: Dict[str, int] = {}  # cut key -> last suffix used, so each collision is O(1)
         for k, v in obj.items():
             if isinstance(k, str):
                 key = _untrusted(k, cap, more)
-                n = 1
-                while key in out:  # two long keys cut to the same text must not drop a value
-                    n += 1
-                    tag = f"#{n}"
-                    key = _untrusted(k, cap - len(tag), more) + tag
+                if key in out:  # two long keys cut to the same text must not drop a value
+                    cut = key
+                    n = seen.get(cut, 1)
+                    while key in out:
+                        n += 1
+                        tag = f"#{n}"
+                        room = cap - len(tag)
+                        if room <= 0:  # cap too small for a suffix: stay inside the cap
+                            key = tag[-cap:] if cap > 0 else ""
+                            break
+                        key = _untrusted(k, room, more) + tag
+                    seen[cut] = n
                 k = key
             out[k] = _cap_strings(v, cap, more)
         return out

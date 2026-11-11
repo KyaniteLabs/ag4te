@@ -63,3 +63,20 @@ def test_short_keys_are_untouched_and_a_third_collision_gets_its_own_number():
     keys = ["k" * 600 + c for c in "ABC"]
     out = ag._cap_strings({k: i for i, k in enumerate(keys)})
     assert sorted(out.values()) == [0, 1, 2] and len(set(out)) == 3
+
+
+def test_cap_strings_collision_suffixing_is_linear_and_within_cap():
+    import time
+    cap = 40
+    keys = ["k" * 100 + str(i) for i in range(3000)]
+    t0 = time.perf_counter()
+    out = ag._cap_strings({k: i for i, k in enumerate(keys)}, cap)
+    elapsed = time.perf_counter() - t0
+    assert len(out) == len(keys)  # no value dropped
+    assert max(len(k) for k in out) <= cap
+    assert elapsed < 2.0, elapsed  # quadratic suffix probing took far longer
+
+
+def test_cap_strings_tiny_cap_never_exceeds_cap():
+    out = ag._cap_strings({"a" * 50: 1, "a" * 51: 2, "a" * 52: 3}, 2)
+    assert all(len(k) <= 2 for k in out)
