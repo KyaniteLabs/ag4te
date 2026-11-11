@@ -2465,14 +2465,29 @@ TOOL_SCHEMA = {
     "name": "ag4te_dig",
     "description": (
         "Read a finished AG4TE dig: a repository's commit history summarised (commits, active days, "
-        "kinds of work, eras, quiet gaps, practice health). Without a project, lists the digs. Read-only."
+        "kinds of work, eras, quiet gaps, practice health). Without a project, lists the digs. Read-only. "
+        "The reply is a short summary; pass detail=full for eras, signals, authors and the rest."
     ),
-    "parameters": {"type": "object", "properties": {"project": {"type": "string"}}},
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "project": {"type": "string"},
+            "detail": {
+                "type": "string",
+                "enum": ["brief", "full"],
+                "default": "brief",
+                "description": "brief (default): a short summary. full: the whole dig, which is large.",
+            },
+        },
+    },
 }
 
 
 def _tool(args: Dict[str, Any], **_: Any) -> str:
     project = (args or {}).get("project")
+    detail = str((args or {}).get("detail") or "brief").strip().lower()
+    if detail not in ("brief", "full"):
+        return json.dumps({"error": f"detail must be 'brief' or 'full', not {detail!r}"})
     try:
         if not project:
             rows = list_projects()
@@ -2490,6 +2505,8 @@ def _tool(args: Dict[str, Any], **_: Any) -> str:
     _pane_event("dig.selected", {"project": project})
     if _on_gateway():  # chat platforms: the summary, without names or paths
         return json.dumps({"summary": brief({**d, "project": "This project"})})
+    if detail == "brief":
+        return json.dumps({"summary": brief(d)})
     keep = (
         "project",
         "commit_count",
