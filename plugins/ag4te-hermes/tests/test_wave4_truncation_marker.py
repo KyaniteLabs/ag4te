@@ -48,3 +48,18 @@ def test_marker_stays_inside_the_cap(cap):
         s = ag._untrusted("z" * n, cap)
         assert len(s) <= cap and "more chars" in s
     assert ag._untrusted("z" * cap, cap) == "z" * cap
+
+
+def test_two_long_keys_with_the_same_start_keep_both_values():
+    a, b = "k" * 600 + "A", "k" * 600 + "B"
+    out = ag._cap_strings({a: 1, b: 2})
+    assert sorted(out.values()) == [1, 2]
+    assert len(out) == 2 and all(len(k) <= ag.TOOL_TEXT_CAP for k in out)
+    assert any(k.endswith("#2") for k in out)
+
+
+def test_short_keys_are_untouched_and_a_third_collision_gets_its_own_number():
+    assert ag._cap_strings({"kinds": 1, "paths": 2}) == {"kinds": 1, "paths": 2}
+    keys = ["k" * 600 + c for c in "ABC"]
+    out = ag._cap_strings({k: i for i, k in enumerate(keys)})
+    assert sorted(out.values()) == [0, 1, 2] and len(set(out)) == 3

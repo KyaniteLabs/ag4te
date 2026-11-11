@@ -2602,8 +2602,18 @@ def _cap_strings(obj: Any, cap: int = TOOL_TEXT_CAP, more: str = _MORE_BRIEF) ->
     if isinstance(obj, list):
         return [_cap_strings(v, cap, more) for v in obj]
     if isinstance(obj, dict):
-        return {_untrusted(k, cap, more) if isinstance(k, str) else k: _cap_strings(v, cap, more)
-                for k, v in obj.items()}
+        out: Dict[Any, Any] = {}
+        for k, v in obj.items():
+            if isinstance(k, str):
+                key = _untrusted(k, cap, more)
+                n = 1
+                while key in out:  # two long keys cut to the same text must not drop a value
+                    n += 1
+                    tag = f"#{n}"
+                    key = _untrusted(k, cap - len(tag), more) + tag
+                k = key
+            out[k] = _cap_strings(v, cap, more)
+        return out
     return obj
 
 
