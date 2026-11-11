@@ -226,12 +226,19 @@ def _pane_event(event: str, payload: Dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- settings
 
 
+_config_warned = False
+
+
 def _cfg(key: str, settings: Optional[Dict[str, Any]] = None) -> Any:
+    global _config_warned
     if settings is not None and key in settings:
         return settings[key]
     try:
         val = _ctx.get_config(key, None) if _ctx is not None else None
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if not _config_warned:  # once: a broken config store would otherwise repeat on every read
+            _config_warned = True
+            logger.warning("ag4te: reading the plugin config failed (%s); using the defaults", type(exc).__name__)
         val = None
     return DEFAULTS[key] if val is None else val
 
