@@ -43,8 +43,13 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "ag4te"
 DEVARCH_PIN = "d884f9a5cdd3b6d03e95114e860cc134d5067b84"  # the catalog-reviewed pin
+# Version pins for DevArch's dependency closure, made for DEVARCH_PIN (see the file header).
+DEVARCH_CONSTRAINTS = Path(__file__).resolve().parent / "devarch-constraints.txt"
 DEFAULTS: Dict[str, Any] = {
-    "devarch_command": f"uvx --from git+https://github.com/KyaniteLabs/ag4te@{DEVARCH_PIN} devarch",
+    "devarch_command": (
+        f"uvx --constraints {shlex.quote(str(DEVARCH_CONSTRAINTS))} "
+        f"--from git+https://github.com/KyaniteLabs/ag4te@{DEVARCH_PIN} devarch"
+    ),
     "repo_roots": "~/workspaces",
     "data_dir": "",
     "timeout_seconds": 600,
