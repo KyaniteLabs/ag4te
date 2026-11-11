@@ -41,11 +41,11 @@ def test_tool_output_marks_repo_text_untrusted_and_capped(tmp_path, monkeypatch)
 
 def test_tool_caps_every_string_in_a_full_reply(monkeypatch):
     monkeypatch.setattr(ag, "validate_project", lambda p: p)
-    monkeypatch.setattr(ag, "load_dig", lambda p: {"authors": [{"name": "A" * 900}], "kinds": []})
+    monkeypatch.setattr(ag, "load_dig", lambda p: {"authors": [{"name": "A" * 5000}], "kinds": []})
     monkeypatch.setattr(ag, "brief", lambda d: "ok")
     monkeypatch.setattr(ag, "_on_gateway", lambda: False)
     out = json.loads(ag._tool({"project": "demo", "detail": "full"}))
-    assert len(out["authors"][0]["name"]) <= ag.TOOL_TEXT_CAP
+    assert len(out["authors"][0]["name"]) <= ag.TOOL_TEXT_CAP_FULL
 
 
 # ---- A-perf
