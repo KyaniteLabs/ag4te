@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 _load_lock = threading.Lock()
+_module_scan_size = -1
+_registered_plugin = None
+_fallback_plugin = None
 
 
 def _manifest_name(default: str = "ag4te") -> str:
@@ -79,11 +82,28 @@ def _read_host_settings() -> dict:
 def _plugin():
     # Prefer the module Hermes registered (its _ctx resolves the user's settings). Hermes gives
     # secondary profiles a __home_<digest> module suffix, so find it by this plugin's source file,
-    # not by name. Failing that, one private copy is loaded under a lock and fed the saved settings;
-    # the running-dig registry is process-wide (see _job_registry), so a second copy sees the same digs.
+    # not by name. Failing that, one private copy is loaded under a lock and fed the saved settings
+    # on every call; the running-dig registry is process-wide (see _job_registry), so a second copy
+    # sees the same digs. The result is cached until sys.modules changes size.
+    global _module_scan_size, _registered_plugin, _fallback_plugin
+    registered = _registered_plugin
+    if registered is not None and sys.modules.get(registered.__name__) is registered:
+        return registered
+    fallback = _fallback_plugin
+    if (
+        fallback is not None
+        and sys.modules.get(fallback.__name__) is fallback
+        and len(sys.modules) == _module_scan_size
+    ):
+        return _with_settings(fallback)
+
     target = (Path(__file__).resolve().parent.parent / "__init__.py").resolve()
-    fallback = None
-    for mod in list(sys.modules.values()):
+    registered = fallback = None
+    private = None
+    for name, mod in tuple(sys.modules.items()):
+        if name == _PRIVATE:
+            private = mod
+            continue
         filename = getattr(mod, "__file__", None)
         if not filename or not hasattr(mod, "start_dig"):
             continue
@@ -92,14 +112,24 @@ def _plugin():
                 continue
         except OSError:
             continue
-        if getattr(mod, "_ctx", None) is not None:
-            return mod
+        ctx = getattr(mod, "_ctx", None)
+        # A _HostConfig is our own stand-in, not a context Hermes registered.
+        if ctx is not None and not isinstance(ctx, _HostConfig):
+            registered = mod
+            break
         fallback = fallback or mod
-    if fallback is None:
+    if registered is not None:
+        _registered_plugin = registered
+        _fallback_plugin = registered
+        _module_scan_size = len(sys.modules)
+        return registered
+    fallback = fallback or private
+    if fallback is None or not hasattr(fallback, "start_dig"):
         with _load_lock:
-            fallback = sys.modules.get(_PRIVATE)
-            if fallback is None or not hasattr(fallback, "start_dig"):
-                fallback = _load_private()
+            mod = sys.modules.get(_PRIVATE)
+            fallback = mod if mod is not None and hasattr(mod, "start_dig") else _load_private()
+    _fallback_plugin = fallback
+    _module_scan_size = len(sys.modules)
     return _with_settings(fallback)
 
 
