@@ -12,6 +12,7 @@ people (humans, coding agents, bots), the most-changed files and practice health
 Surfaces:
 * ``/ag4te list | show <project> | status <project> | dig <repo> [project]``
 * ``ag4te_dig`` tool: read-only summary of a finished dig (or the list of digs).
+* ``ag4te_show`` tool: point the open Desktop page at a section or item.
 * Desktop page (``desktop/plugin.js``) backed by ``dashboard/plugin_api.py``.
 
 Safety: repositories must sit under ``repo_roots``; project names are validated; DevArch runs
@@ -64,6 +65,25 @@ GAP_MIN_DAYS = 3  # idle days that make a quiet gap; gaps also cut eras
 SIGNAL_MERGE_DAYS = 7  # same-kind signals closer than this fold into one
 ERA_MIN_COMMITS = 10  # eras this big get a number and a colour
 _PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+PANE_VIEWS = (
+    "overview",
+    "story",
+    "strata",
+    "rhythm",
+    "churn",
+    "practices",
+    "turning-points",
+    "people",
+    "change-size",
+    "files",
+    "releases",
+    "commits",
+)
+_ITEM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+PANE_GUIDANCE = (
+    "Check that AG4TE is on in Desktop Capabilities -> Plugins; enabling it there is the "
+    "one step a person does, then open the AG4TE page."
+)
 
 # Kinds of work, in the fixed order the chart stacks and colours them.
 KINDS = ("feat", "fix", "refactor", "docs", "ops", "test", "other")
@@ -155,6 +175,41 @@ _cancels: Dict[str, threading.Event] = _reg.cancels
 
 class DigError(ValueError):
     """A dig request that cannot run (bad project name, repo outside the roots, …)."""
+
+
+def _pane_event(event: str, payload: Dict[str, Any]) -> None:
+    valid = False
+    if event == "view.set":
+        valid = (
+            set(payload) in ({"view"}, {"view", "item_id"})
+            and isinstance(payload.get("view"), str)
+            and payload["view"] in PANE_VIEWS
+            and (
+                "item_id" not in payload
+                or (isinstance(payload["item_id"], str) and _ITEM_RE.fullmatch(payload["item_id"]))
+            )
+        )
+    elif event == "projects.updated":
+        valid = (
+            set(payload) == {"count"}
+            and type(payload["count"]) is int
+            and 0 <= payload["count"] <= 1_000_000
+        )
+    elif event in ("dig.selected", "dig.updated"):
+        keys = {"project"} if event == "dig.selected" else {"project", "state"}
+        valid = (
+            set(payload) == keys
+            and isinstance(payload.get("project"), str)
+            and _PROJECT_RE.fullmatch(payload["project"])
+            and (event == "dig.selected" or payload.get("state") in DIG_STATES)
+        )
+    if not valid:
+        raise DigError("invalid Desktop event or payload")
+    try:
+        from hermes_cli.plugin_events import broadcast_plugin_event
+    except ImportError:
+        return  # Older Hermes and standalone tests have no Desktop bridge.
+    broadcast_plugin_event(PLUGIN_NAME, event, payload)
 
 
 # --------------------------------------------------------------------------- settings
@@ -1697,6 +1752,7 @@ def _set_status(pdir: Path, *, fresh: bool = False, **fields: Any) -> Dict[str, 
             raise DigError(f"dig state cannot go from {was} to {to}")
     cur.update(fields, updated_at=time.time())
     _write_json(pdir / STATUS_FILE, cur)
+    _pane_event("dig.updated", {"project": pdir.name, "state": cur.get("state", "none")})
     return cur
 
 
@@ -2252,7 +2308,8 @@ def _on_gateway() -> bool:
 
 USAGE = (
     "Usage: /ag4te list | show <project> | status <project> | dig <repo-path> [project] | stop <project> | resume <project>\n"
-    "A dig mines a local repo's history; open AG4TE in Hermes Desktop to see its strata."
+    "A dig mines a local repo's history; open AG4TE in Hermes Desktop to see its strata.\n"
+    + PANE_GUIDANCE
 )
 
 
@@ -2286,8 +2343,10 @@ def _slash(raw_args: str) -> str:
                 fields = ("state", "step", "steps", "interrupted", "cancelling")
                 if not chat:  # error text and warnings can carry host paths
                     fields += ("label", "error", "warnings")
-                return json.dumps({k: st.get(k) for k in fields})
+                return json.dumps({**{k: st.get(k) for k in fields}, "desktop": PANE_GUIDANCE})
             d = load_dig(validate_project(rest[0]))
+            if d:
+                _pane_event("dig.selected", {"project": rest[0]})
             return brief(d) if d else f"No finished dig named {rest[0]}."
         if cmd == "stop" and len(rest) == 1:
             if chat and not _cfg("allow_dig_on_gateway"):
@@ -2327,6 +2386,7 @@ def _tool(args: Dict[str, Any], **_: Any) -> str:
     try:
         if not project:
             rows = list_projects()
+            _pane_event("projects.updated", {"count": len(rows)})
             if _on_gateway():  # repo paths and error text stay on the host
                 rows = [{k: v for k, v in r.items() if k not in ("repo", "error")} for r in rows]
             return json.dumps({"digs": rows})
@@ -2335,6 +2395,7 @@ def _tool(args: Dict[str, Any], **_: Any) -> str:
         return json.dumps({"error": str(exc)})
     if not d:
         return json.dumps({"error": f"no finished dig named {project}"})
+    _pane_event("dig.selected", {"project": project})
     if _on_gateway():  # chat platforms: the summary, without names or paths
         return json.dumps({"summary": brief(d)})
     keep = (
@@ -2374,6 +2435,41 @@ def _tool(args: Dict[str, Any], **_: Any) -> str:
     )
 
 
+SHOW_SCHEMA = {
+    "name": "ag4te_show",
+    "description": "Point the open, enabled AG4TE Desktop page at a section and optional item id.",
+    "parameters": {
+        "type": "object",
+        "required": ["view"],
+        "additionalProperties": False,
+        "properties": {
+            "view": {"type": "string", "enum": list(PANE_VIEWS)},
+            "item_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": _ITEM_RE.pattern,
+            },
+        },
+    },
+}
+
+
+def _show_tool(args: Dict[str, Any], **_: Any) -> str:
+    try:
+        if not isinstance(args, dict):
+            raise DigError("expected view and optional item_id")
+        _pane_event("view.set", args)
+    except DigError:
+        return (
+            "Error: view must be one of "
+            + ", ".join(PANE_VIEWS)
+            + "; item_id must be 1-128 letters, digits, or _.:-."
+        )
+    item = f" (item {args['item_id']})" if "item_id" in args else ""
+    return f"Asked AG4TE to show {args['view']}{item}; the page must be open and enabled."
+
+
 def register(ctx) -> None:
     global _ctx
     _ctx = ctx
@@ -2391,3 +2487,17 @@ def register(ctx) -> None:
         description=TOOL_SCHEMA["description"],
         emoji="🪨",
     )
+    ctx.register_tool(
+        name="ag4te_show",
+        toolset="ag4te",
+        schema=SHOW_SCHEMA,
+        handler=_show_tool,
+        description=SHOW_SCHEMA["description"],
+        emoji="🪨",
+    )
+    if callable(getattr(ctx, "register_skill", None)):
+        ctx.register_skill(
+            "ag4te",
+            Path(__file__).parent / "skills/ag4te/SKILL.md",
+            description="Read repository history and guide the AG4TE Desktop page.",
+        )
