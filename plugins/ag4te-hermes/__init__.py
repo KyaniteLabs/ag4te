@@ -484,7 +484,7 @@ def run_devarch(
     ``cancel`` set while the command runs stops it (TERM, then KILL after 5 s).
     """
     try:
-        cmd = shlex.split(str(_cfg("devarch_command", settings))) + [str(a) for a in args]
+        cmd = _split_command(str(_cfg("devarch_command", settings))) + [str(a) for a in args]
     except ValueError as exc:
         return {"ok": False, "code": None, "out": "", "err": f"invalid devarch_command: {exc}"}
     if not cmd:
@@ -569,6 +569,15 @@ _GIT_FORMAT = (
     "%(trailers:key=Co-authored-by,valueonly,separator=%x1d)"
 )
 _GIT_ENV_ALLOW = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "SYSTEMROOT")
+
+
+def _split_command(raw: str, windows: Optional[bool] = None) -> List[str]:
+    """``shlex.split`` that keeps Windows backslash paths: POSIX rules there eat every ``\\``."""
+    windows = os.name == "nt" if windows is None else windows
+    parts = shlex.split(raw, posix=not windows)
+    if windows:  # non-POSIX mode leaves the quotes on; drop one matching pair
+        parts = [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
+    return parts
 
 
 def _git_env() -> Dict[str, str]:
@@ -2415,7 +2424,7 @@ USAGE = (
 
 def _slash(raw_args: str) -> str:
     try:
-        args = shlex.split(raw_args or "")
+        args = _split_command(raw_args or "")
     except ValueError as exc:
         return f"Could not parse arguments: {exc}"
     if not args or args[0] in ("help", "-h", "--help"):
