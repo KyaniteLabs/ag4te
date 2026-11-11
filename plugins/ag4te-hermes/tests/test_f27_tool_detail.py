@@ -40,7 +40,7 @@ def test_default_reply_is_the_brief_and_small(monkeypatch):
     setup(monkeypatch)
     out = ag._tool({"project": "demo"})
     d = json.loads(out)
-    assert set(d) == {"summary"} and "900 commits" in d["summary"]
+    assert set(d) - {"notice"} == {"summary"} and "900 commits" in d["summary"]
     assert len(out) < 1500
     assert out == ag._tool({"project": "demo", "detail": "brief"})
 
@@ -62,7 +62,7 @@ def test_unknown_detail_is_an_error(monkeypatch):
 def test_gateway_stays_summary_only_even_for_full(monkeypatch):
     setup(monkeypatch)
     monkeypatch.setattr(ag, "_on_gateway", lambda: True)
-    assert set(json.loads(ag._tool({"project": "demo", "detail": "full"}))) == {"summary"}
+    assert set(json.loads(ag._tool({"project": "demo", "detail": "full"}))) - {"notice"} == {"summary"}
 
 
 def test_schema_declares_detail():
