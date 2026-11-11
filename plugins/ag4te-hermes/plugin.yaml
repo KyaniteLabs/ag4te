@@ -2,6 +2,8 @@ name: ag4te
 version: 0.3.0
 manifest_version: 2
 requires_hermes: ">=0.21.6"
+author: "Kyanite Labs"
+license: Apache-2.0
 description: >-
   AG4TE digs a local git repository's history with DevArch and draws its strata in
   Hermes Desktop: commits per day by kind of work, eras, quiet gaps, signals, weekly
