@@ -6,7 +6,6 @@ import importlib.util
 import sys
 import threading
 from pathlib import Path
-from types import SimpleNamespace
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
@@ -14,11 +13,49 @@ router = APIRouter()
 
 
 _load_lock = threading.Lock()
+PLUGIN_ID = "ag4te"
+_PRIVATE = "_ag4te_private"
+
+
+class _HostConfig:
+    """Stand-in for the plugin context when Hermes did not hand this copy one.
+
+    It answers get_config from the user's saved plugin settings
+    (plugins.entries.ag4te.settings in the Hermes config), so a private copy
+    honours the same repo_roots and timeouts as the registered plugin.
+    """
+
+    def __init__(self) -> None:
+        self.settings: dict = {}
+
+    def get_config(self, key, default=None):
+        val = self.settings.get(key)
+        return default if val is None else val
+
+
+def _read_host_settings() -> dict:
+    """The user's saved settings, {} outside Hermes; 503 when Hermes is here but unreadable."""
+    try:
+        from hermes_cli.config import load_config_readonly  # type: ignore
+    except ImportError:
+        return {}  # no Hermes host (tests, standalone): the plugin defaults stand
+    try:
+        entry = ((load_config_readonly() or {}).get("plugins") or {}).get("entries", {}).get(
+            PLUGIN_ID
+        ) or {}
+        return dict(entry.get("settings") or {})
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"AG4TE cannot read its settings from Hermes ({exc}); not using defaults",
+        ) from exc
 
 
 def _plugin():
-    # Hermes gives secondary profiles a __home_<digest> module suffix. Resolve
-    # by this plugin's source file so the dashboard shares the registered context.
+    # Prefer the module Hermes registered (its _ctx resolves the user's settings). Hermes gives
+    # secondary profiles a __home_<digest> module suffix, so find it by this plugin's source file,
+    # not by name. Failing that, one private copy is loaded under a lock and fed the saved settings;
+    # the running-dig registry is process-wide (see _job_registry), so a second copy sees the same digs.
     target = (Path(__file__).resolve().parent.parent / "__init__.py").resolve()
     fallback = None
     for mod in list(sys.modules.values()):
@@ -33,39 +70,34 @@ def _plugin():
         if getattr(mod, "_ctx", None) is not None:
             return mod
         fallback = fallback or mod
-    if fallback is not None:
-        return fallback
-    with _load_lock:
-        mod = sys.modules.get("_ag4te_private")
-        if mod is not None and hasattr(mod, "start_dig"):
-            return mod
-        return _load_private()
+    if fallback is None:
+        with _load_lock:
+            fallback = sys.modules.get(_PRIVATE)
+            if fallback is None or not hasattr(fallback, "start_dig"):
+                fallback = _load_private()
+    return _with_settings(fallback)
+
+
+def _with_settings(mod):
+    """Give a module that has no registered context the user's saved settings."""
+    ctx = getattr(mod, "_ctx", None)
+    if ctx is None:
+        ctx = _HostConfig()
+        mod._ctx = ctx
+    if isinstance(ctx, _HostConfig):
+        ctx.settings = _read_host_settings()
+    return mod
 
 
 def _load_private():
     pkg_dir = Path(__file__).resolve().parent.parent
-    spec = importlib.util.spec_from_file_location("_ag4te_private", pkg_dir / "__init__.py")
+    spec = importlib.util.spec_from_file_location(_PRIVATE, pkg_dir / "__init__.py")
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["_ag4te_private"] = mod
+    sys.modules[_PRIVATE] = mod
     try:
         spec.loader.exec_module(mod)
-        settings = dict(mod.DEFAULTS)
-        try:
-            from hermes_cli.config import load_config_readonly  # type: ignore
-
-            entry = ((load_config_readonly() or {}).get("plugins") or {}).get(
-                "entries", {}
-            ).get("ag4te") or {}
-            for key, value in (entry.get("settings") or {}).items():
-                if key in settings and value is not None:
-                    settings[key] = value
-        except Exception:  # noqa: BLE001 - standalone API inspection uses defaults
-            pass
-        mod._ctx = SimpleNamespace(
-            get_config=lambda key, default=None: settings.get(key, default)
-        )
     except BaseException:
-        sys.modules.pop("_ag4te_private", None)
+        sys.modules.pop(_PRIVATE, None)
         raise
     return mod
 
