@@ -33,22 +33,30 @@ class _HostConfig:
         return default if val is None else val
 
 
+def _unreadable(exc: BaseException) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail=f"AG4TE cannot read its settings from Hermes ({exc}); not using defaults",
+    )
+
+
 def _read_host_settings() -> dict:
     """The user's saved settings, {} outside Hermes; 503 when Hermes is here but unreadable."""
     try:
         from hermes_cli.config import load_config_readonly  # type: ignore
-    except ImportError:
-        return {}  # no Hermes host (tests, standalone): the plugin defaults stand
+    except ModuleNotFoundError as exc:
+        if exc.name == "hermes_cli" or sys.modules.get("hermes_cli", 0) is None:
+            return {}  # no Hermes host (tests, standalone): the plugin defaults stand
+        raise _unreadable(exc) from exc
+    except ImportError as exc:  # Hermes is here but its loader is not: never fall back silently
+        raise _unreadable(exc) from exc
     try:
         entry = ((load_config_readonly() or {}).get("plugins") or {}).get("entries", {}).get(
             PLUGIN_ID
         ) or {}
         return dict(entry.get("settings") or {})
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=503,
-            detail=f"AG4TE cannot read its settings from Hermes ({exc}); not using defaults",
-        ) from exc
+        raise _unreadable(exc) from exc
 
 
 def _plugin():
@@ -145,7 +153,7 @@ def start(body: dict = Body(...)):
     try:
         return p.start_dig(repo, project, resume=bool(body.get("resume")))
     except p.DigError as exc:
-        _bad(exc, 409 if "already running" in str(exc) else 400)
+        _bad(exc, 409 if isinstance(exc, p.DigBusyError) else 400)
 
 
 @router.post("/cancel")

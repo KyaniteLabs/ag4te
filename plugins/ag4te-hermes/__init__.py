@@ -183,6 +183,10 @@ class DigError(ValueError):
     """A dig request that cannot run (bad project name, repo outside the roots, …)."""
 
 
+class DigBusyError(DigError):
+    """Another dig already holds the one-at-a-time slot (the dashboard answers 409)."""
+
+
 def _pane_event(event: str, payload: Dict[str, Any]) -> None:
     valid = False
     if event == "view.set":
@@ -2111,7 +2115,7 @@ def _take_lease(project: str, settings: Optional[Dict[str, Any]] = None) -> None
             except FileExistsError:
                 held = read_lease(settings, _locked=True)
                 if held:
-                    raise DigError(
+                    raise DigBusyError(
                         f"a dig is already running ({held.get('project')}) in another Hermes "
                         "process; one at a time keeps the host light"
                     ) from None
@@ -2205,7 +2209,7 @@ def start_dig(
     with _jobs_lock:
         busy = [p for p, t in _jobs.items() if t.is_alive()]
         if busy:
-            raise DigError(
+            raise DigBusyError(
                 f"a dig is already running ({busy[0]}); one at a time keeps the host light"
             )
         _take_lease(project, settings)  # the same rule across Hermes processes
@@ -2483,7 +2487,13 @@ TOOL_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "project": {"type": "string"},
+            "project": {
+                "type": "string",
+                "description": (
+                    "Name of a finished dig to read, for example 'my-repo'. "
+                    "Leave it out to list every dig."
+                ),
+            },
             "detail": {
                 "type": "string",
                 "enum": ["brief", "full"],
