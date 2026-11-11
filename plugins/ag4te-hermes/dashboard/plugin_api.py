@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import re
 import sys
 import threading
 from pathlib import Path
@@ -15,7 +16,19 @@ logger = logging.getLogger(__name__)
 
 
 _load_lock = threading.Lock()
-PLUGIN_ID = "ag4te"
+
+
+def _manifest_name(default: str = "ag4te") -> str:
+    """The plugin id from plugin.yaml (the key Hermes keeps settings under), not a literal."""
+    try:
+        text = (Path(__file__).resolve().parent.parent / "plugin.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return default
+    m = re.search(r"^name:\s*['\"]?([A-Za-z0-9_.-]+)['\"]?\s*$", text, re.M)
+    return m.group(1) if m else default
+
+
+PLUGIN_ID = _manifest_name()
 _PRIVATE = "_ag4te_private"
 
 

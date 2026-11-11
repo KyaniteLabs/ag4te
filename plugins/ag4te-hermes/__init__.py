@@ -42,7 +42,20 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-PLUGIN_NAME = "ag4te"
+
+
+def _manifest_name(default: str = "ag4te") -> str:
+    """The plugin id: ``name:`` in plugin.yaml next to this file, which is also the key Hermes keeps
+    settings under. The source folder is ag4te-hermes, so the folder name is not it."""
+    try:
+        text = (Path(__file__).resolve().parent / "plugin.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return default
+    m = re.search(r"^name:\s*['\"]?([A-Za-z0-9_.-]+)['\"]?\s*$", text, re.M)
+    return m.group(1) if m else default
+
+
+PLUGIN_NAME = _manifest_name()
 DEVARCH_PIN = "d884f9a5cdd3b6d03e95114e860cc134d5067b84"  # the catalog-reviewed pin
 # Version pins for DevArch's dependency closure, made for DEVARCH_PIN (see the file header).
 DEVARCH_CONSTRAINTS = Path(__file__).resolve().parent / "devarch-constraints.txt"
