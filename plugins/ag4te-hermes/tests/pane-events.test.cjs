@@ -147,3 +147,26 @@ test('commit focus reveals a row beyond the first page', async () => {
   assert.equal(focused, before, 'manual search must keep keyboard focus')
   page.unmount()
 })
+
+test('release focus renders a target older than the ten newest releases', () => {
+  const sandbox = {
+    jsx: (type, props) => ({ type, props }),
+    jsxs: (type, props) => ({ type, props }),
+    Date, Intl, Math, Number, String, Array, Object,
+  }
+  vm.createContext(sandbox)
+  vm.runInContext(source + '\nglobalThis.Releases = Releases;', sandbox)
+  const releases = Array.from({ length: 11 }, (_, i) => ({
+    name: `v${i}`,
+    sha: `sha${i}`,
+    d: `2026-01-${String(i + 1).padStart(2, '0')}`,
+    on_history: true,
+  }))
+  const tree = sandbox.Releases({
+    d: { releases, commits: [] },
+    multiYear: false,
+    target: { view: 'releases', item_id: 'sha0', revision: 1 },
+  })
+
+  assert(nodes(tree).some(n => n.props?.['data-ag-item'] === 'sha0'))
+})

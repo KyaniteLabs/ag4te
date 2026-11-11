@@ -874,20 +874,24 @@ function Files({ d }) {
     })))
 }
 
-function Releases({ d, multiYear }) {
+function Releases({ d, multiYear, target }) {
   const rows = (d.releases || []).slice().reverse()
   if (!rows.length) return null
+  const shown = rows.slice(0, 10)
+  const targetRelease = target && rows.find(r => r.sha === target.item_id)
+  if (targetRelease && !shown.includes(targetRelease)) shown.push(targetRelease)
   const ds = (d.commits || []).map(c => c.day)
   return h('section', { 'data-ag-view': 'releases', className: 'ag-card ag-rise' },
     h('div', { className: 'ag-chead' }, h('div', null, h('h3', null, 'Releases'), h('p', { className: 'ag-sub' }, `${rows.length} tag${rows.length === 1 ? '' : 's'}, newest first. Ticks under the strata mark each one.`))),
-    h('ol', { className: 'ag-rel' }, rows.slice(0, 10).map((r, i) => {
+    h('ol', { className: 'ag-rel' }, shown.map(r => {
+      const i = rows.indexOf(r)
       const prev = rows[i + 1]
       const n = prev ? ds.filter(x => x > prev.d && x <= r.d).length : null
       return h('li', { key: r.name + r.sha, 'data-ag-item': r.sha },
         h('b', null, r.name), h('time', null, multiYear ? fmtDayY(r.d) : fmtDay(r.d)),
         h('span', { className: 'ag-muted' }, !r.on_history ? 'on another branch' : n == null ? 'first tag' : `${num(n)} commit${n === 1 ? '' : 's'} since ${prev.name}`))
     })),
-    rows.length > 10 ? h('p', { className: 'ag-muted' }, `and ${rows.length - 10} older`) : null)
+    rows.length > shown.length ? h('p', { className: 'ag-muted' }, `and ${rows.length - shown.length} older`) : null)
 }
 
 const STATUS = {
@@ -1347,7 +1351,7 @@ function Page({ ctx }) {
       h(Strata, { key: 'strata', d, pal, eraNo, hl, setHl, multiYear, sig, setSig }),
       h('div', { key: 'g2', className: 'ag-grid2' }, h(Rhythm, { d }), h(Churn, { d })),
       h('div', { key: 'g3', className: 'ag-grid3' }, h(Practices, { d }), h(Turning, { d, sig, setSig, multiYear }), h('div', { className: 'ag-stack' }, h(People, { d }), h(Load, { d }))),
-      (d.paths || []).length || (d.releases || []).length ? h('div', { key: 'g4', className: 'ag-grid2' }, h(Files, { d }), h(Releases, { d, multiYear })) : null,
+      (d.paths || []).length || (d.releases || []).length ? h('div', { key: 'g4', className: 'ag-grid2' }, h(Files, { d }), h(Releases, { d, multiYear, target: target && target.view === 'releases' ? target : null })) : null,
       h(Commits, { key: 'commits', d, pal, eraNo, hl, setHl, target }),
       h(Provenance, { key: 'prov', d, when })
     ]

@@ -1752,7 +1752,10 @@ def _set_status(pdir: Path, *, fresh: bool = False, **fields: Any) -> Dict[str, 
             raise DigError(f"dig state cannot go from {was} to {to}")
     cur.update(fields, updated_at=time.time())
     _write_json(pdir / STATUS_FILE, cur)
-    _pane_event("dig.updated", {"project": pdir.name, "state": cur.get("state", "none")})
+    try:
+        _pane_event("dig.updated", {"project": pdir.name, "state": cur.get("state", "none")})
+    except Exception:
+        logger.debug("AG4TE Desktop event was not delivered", exc_info=True)
     return cur
 
 
@@ -1942,6 +1945,24 @@ def _host() -> str:
     return socket.gethostname()
 
 
+def _boot_id() -> Optional[str]:
+    """Linux boot identity, when the host exposes one."""
+    try:
+        value = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def _proc_start(pid: Any) -> Optional[str]:
+    """When a process started (clock ticks since boot), on hosts that expose /proc."""
+    try:
+        stat = Path(f"/proc/{int(pid)}/stat").read_text(encoding="ascii")
+        return stat.rsplit(")", 1)[1].split()[19]
+    except (OSError, ValueError, IndexError, TypeError):
+        return None
+
+
 def _lease_path(settings: Optional[Dict[str, Any]] = None) -> Path:
     return workspace(settings) / LEASE_FILE
 
@@ -1984,31 +2005,42 @@ def read_lease(
 ) -> Optional[Dict[str, Any]]:
     """The dig lease when a live process holds it, else None.
 
-    A lease whose owner died on this host is stale and does not count. A lease from
-    another host counts as held until its maximum age: its owner cannot be checked
-    from here.
+    A same-host lease is checked against its owner: the boot and the process start time
+    must match, so a PID reused after a crash or reboot does not keep it alive. When the
+    owner cannot be verified (another host, or no /proc), the lease expires at the maximum
+    age instead.
     """
     data = _read_json(_lease_path(settings))
     if not isinstance(data, dict):
         return None
-    if data.get("host") == _host():
-        if not _pid_alive(data.get("pid")):
-            return None
-        if data.get("pid") == os.getpid():
-            # our own process: only a live dig thread keeps it
-            if _locked:
+    try:
+        since = float(data["since"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    expired = time.time() - since > MAX_LEASE_AGE_SECONDS
+    if data.get("host") != _host():
+        return None if expired else data
+    recorded_boot = data.get("boot_id")
+    current_boot = _boot_id()
+    if recorded_boot and current_boot and recorded_boot != current_boot:
+        return None
+    if not _pid_alive(data.get("pid")):
+        return None
+    recorded_start = data.get("pid_start")
+    current_start = _proc_start(data.get("pid")) if recorded_start else None
+    if recorded_start and current_start:
+        if recorded_start != current_start:
+            return None  # the PID now belongs to a different process
+    elif expired:
+        return None
+    if data.get("pid") == os.getpid():
+        # our own process: only a live dig thread keeps it
+        if _locked:
+            t = _jobs.get(str(data.get("project")))
+        else:
+            with _jobs_lock:
                 t = _jobs.get(str(data.get("project")))
-            else:
-                with _jobs_lock:
-                    t = _jobs.get(str(data.get("project")))
-            if not (t and t.is_alive()):
-                return None
-    else:
-        try:
-            since = float(data["since"])
-        except (KeyError, TypeError, ValueError):
-            return None
-        if time.time() - since > MAX_LEASE_AGE_SECONDS:
+        if not (t and t.is_alive()):
             return None
     return data
 
@@ -2020,7 +2052,14 @@ def _take_lease(project: str, settings: Optional[Dict[str, Any]] = None) -> None
     path.parent.mkdir(parents=True, exist_ok=True)
     with _lease_guard(path):
         body = json.dumps(
-            {"project": project, "pid": os.getpid(), "host": _host(), "since": time.time()}
+            {
+                "project": project,
+                "pid": os.getpid(),
+                "host": _host(),
+                "boot_id": _boot_id(),
+                "pid_start": _proc_start(os.getpid()),
+                "since": time.time(),
+            }
         )
         for _ in range(3):
             fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".lease-")
@@ -2046,6 +2085,23 @@ def _take_lease(project: str, settings: Optional[Dict[str, Any]] = None) -> None
                 except OSError:
                     pass
     raise DigError("could not claim the dig lease; try again")
+
+
+def unlock_lease(settings: Optional[Dict[str, Any]] = None) -> bool:
+    """Remove an expired lease without disturbing an active dig."""
+    path = _lease_path(settings)
+    if not path.exists():
+        return False
+    with _lease_guard(path):
+        if not path.exists():
+            return False
+        if read_lease(settings, _locked=True):
+            raise DigError("a dig is still running; its lease cannot be unlocked")
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return False
+    return True
 
 
 def _drop_lease(project: str, settings: Optional[Dict[str, Any]] = None) -> None:
@@ -2307,7 +2363,7 @@ def _on_gateway() -> bool:
 
 
 USAGE = (
-    "Usage: /ag4te list | show <project> | status <project> | dig <repo-path> [project] | stop <project> | resume <project>\n"
+    "Usage: /ag4te list | show <project> | status <project> | dig <repo-path> [project] | stop <project> | resume <project> | unlock\n"
     "A dig mines a local repo's history; open AG4TE in Hermes Desktop to see its strata.\n"
     + PANE_GUIDANCE
 )
@@ -2323,6 +2379,10 @@ def _slash(raw_args: str) -> str:
     cmd, rest = args[0], args[1:]
     chat = _on_gateway()
     try:
+        if cmd == "unlock" and not rest:
+            if chat:
+                return "/ag4te unlock is available only on the local Hermes host."
+            return "Removed the stale dig lease." if unlock_lease() else "No stale dig lease."
         if cmd == "list":
             rows = list_projects()
             if not rows:
@@ -2347,7 +2407,9 @@ def _slash(raw_args: str) -> str:
             d = load_dig(validate_project(rest[0]))
             if d:
                 _pane_event("dig.selected", {"project": rest[0]})
-            return brief(d) if d else f"No finished dig named {rest[0]}."
+            if not d:
+                return "No finished dig available." if chat else f"No finished dig named {rest[0]}."
+            return brief({**d, "project": "This project"}) if chat else brief(d)
         if cmd == "stop" and len(rest) == 1:
             if chat and not _cfg("allow_dig_on_gateway"):
                 return "/ag4te stop is off on chat platforms; stop the dig from the Hermes CLI or Desktop."
@@ -2387,17 +2449,19 @@ def _tool(args: Dict[str, Any], **_: Any) -> str:
         if not project:
             rows = list_projects()
             _pane_event("projects.updated", {"count": len(rows)})
-            if _on_gateway():  # repo paths and error text stay on the host
-                rows = [{k: v for k, v in r.items() if k not in ("repo", "error")} for r in rows]
+            if _on_gateway():  # only aggregate counts and states cross remote surfaces
+                states = Counter(str(r.get("state")) for r in rows)
+                return json.dumps({"count": len(rows), "states": dict(sorted(states.items()))})
             return json.dumps({"digs": rows})
         d = load_dig(validate_project(project))
     except DigError as exc:
         return json.dumps({"error": str(exc)})
     if not d:
-        return json.dumps({"error": f"no finished dig named {project}"})
+        message = "no finished dig available" if _on_gateway() else f"no finished dig named {project}"
+        return json.dumps({"error": message})
     _pane_event("dig.selected", {"project": project})
     if _on_gateway():  # chat platforms: the summary, without names or paths
-        return json.dumps({"summary": brief(d)})
+        return json.dumps({"summary": brief({**d, "project": "This project"})})
     keep = (
         "project",
         "commit_count",

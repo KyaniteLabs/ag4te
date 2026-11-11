@@ -1,7 +1,9 @@
 """Agent tools and dig progress notify Desktop without broadcasting private data."""
 
+import importlib
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -11,6 +13,12 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 PKG = Path(__file__).resolve().parents[1]
+HERMES_SOURCE = Path(
+    os.environ.get(
+        "AG4TE_HERMES_SOURCE",
+        "/tmp/claude-1001/-home-simon-factory-repos-KyaniteLabs-DialectOS/42f3cfa0-03b9-4d41-9bb3-d18bbbef4060/scratchpad/roast/r3-tmp/opus/hermes023",
+    )
+)
 
 
 def load_plugin():
@@ -144,6 +152,39 @@ def test_event_boundary_rejects_invalid_payloads(pane, event, payload):
     with pytest.raises(ag.DigError):
         ag._pane_event(event, payload)
     assert calls == []
+
+
+@pytest.mark.skipif(not HERMES_SOURCE.is_dir(), reason="Hermes v0.23.0 source is not available")
+def test_status_event_failure_isolated_with_real_hermes_bridge(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(HERMES_SOURCE))
+    monkeypatch.delitem(sys.modules, "hermes_cli.plugin_events", raising=False)
+    monkeypatch.delitem(sys.modules, "hermes_cli", raising=False)
+    bridge = importlib.import_module("hermes_cli.plugin_events")
+    assert Path(bridge.__file__).resolve().is_relative_to(HERMES_SOURCE.resolve())
+    calls = []
+    gateway = ModuleType("tui_gateway")
+    gateway.__path__ = []
+    server = ModuleType("tui_gateway.server")
+
+    def fail_delivery(name, payload):
+        calls.append((name, payload))
+        raise RuntimeError("synthetic delivery failure")
+
+    server._broadcast_global_event = fail_delivery
+    monkeypatch.setitem(sys.modules, "tui_gateway", gateway)
+    monkeypatch.setitem(sys.modules, "tui_gateway.server", server)
+
+    ag = load_plugin()
+    valid = tmp_path / "projects" / "demo"
+    ag._set_status(valid, fresh=True, state="running")
+    assert calls == [
+        ("plugin.ag4te.dig.updated", {"project": "demo", "state": "running"})
+    ]
+    invalid = tmp_path / "projects" / "invalid name"
+    result = ag._set_status(invalid, fresh=True, state="running")
+
+    assert result["state"] == "running"
+    assert ag._read_json(invalid / ag.STATUS_FILE)["state"] == "running"
 
 
 def test_registration_exposes_show_and_skill(pane):
