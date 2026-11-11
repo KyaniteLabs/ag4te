@@ -4,6 +4,7 @@ import tracemalloc
 
 from test_summary import ag, make_project
 
+
 # ---- X-SHLEX
 def test_windows_paths_keep_their_backslashes():
     cmd = r'"C:\Program Files\uv\uvx.exe" --from devarch'
