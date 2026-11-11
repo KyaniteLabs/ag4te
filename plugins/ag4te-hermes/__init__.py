@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 import subprocess
 import tempfile
 import threading
@@ -404,18 +405,48 @@ def _scrubbed_env(settings: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     return env
 
 
+def _signal_group(proc: "subprocess.Popen[str]", sig: int) -> None:
+    """Signal the child's whole process group (it leads one: start_new_session)."""
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(proc.pid, sig)
+            return
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.send_signal(sig)
+    except (ProcessLookupError, OSError):
+        pass
+
+
+def _stop_group(proc: "subprocess.Popen[str]") -> Tuple[str, str]:
+    """TERM the group, KILL it after 5 s, and never wait unbounded for the pipes to close."""
+    kill = getattr(signal, "SIGKILL", signal.SIGTERM)
+    _signal_group(proc, signal.SIGTERM)
+    try:
+        out, err = proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        _signal_group(proc, kill)
+        try:
+            out, err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            return "", ""  # a pipe is held open by something we cannot reach; give up on it
+    _signal_group(proc, kill)  # reap any grandchild that outlived the child
+    return out or "", err or ""
+
+
 def _wait_proc(
     proc: subprocess.Popen, timeout: float, cancel: Optional[threading.Event] = None
 ) -> Tuple[Optional[str], str, str]:
-    """Wait for ``proc``; stop it (TERM, then KILL after 5 s) on cancel or timeout.
+    """Wait for proc; stop its process group (TERM, then KILL after 5 s) on cancel or timeout.
 
-    Returns ``(why it was stopped or None, stdout, stderr)``.
+    Returns (why it was stopped or None, stdout, stderr).
     """
     deadline = time.monotonic() + timeout
     why = None
     while True:
         try:
-            out, err = proc.communicate(timeout=0.5)
+            out, err = proc.communicate(timeout=0.1)
             return why, out or "", err or ""
         except subprocess.TimeoutExpired:
             if cancel is not None and cancel.is_set():
@@ -423,13 +454,8 @@ def _wait_proc(
             elif time.monotonic() > deadline:
                 why = f"timed out after {timeout:g}s"
             if why:
-                proc.terminate()
-                try:
-                    out, err = proc.communicate(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    out, err = proc.communicate()
-                return why, out or "", err or ""
+                out, err = _stop_group(proc)
+                return why, out, err
 
 
 def run_devarch(
@@ -464,6 +490,7 @@ def run_devarch(
             env=env,
             cwd=env["DEVARCH_WORKSPACE"],
             stdin=subprocess.DEVNULL,
+            start_new_session=True,  # own process group, so cancel reaches grandchildren
         )
     except (FileNotFoundError, PermissionError) as exc:
         return {"ok": False, "code": None, "out": "", "err": f"devarch not runnable: {exc}"}
@@ -593,6 +620,7 @@ def mine_git(
                 text=True,
                 env=_git_env(),
                 stdin=subprocess.DEVNULL,
+                start_new_session=True,
             )
             why, _, err = _wait_proc(proc, timeout, cancel)
     except OSError as exc:
