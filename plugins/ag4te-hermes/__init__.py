@@ -1004,25 +1004,32 @@ def author_aliases(counts: Counter) -> Dict[str, str]:
 
 def project_zone(settings: Optional[Dict[str, Any]] = None):
     """The one clock a dig buckets days and hours by: ``time_zone`` or the host's zone."""
+    zone, name, _ = resolve_zone(settings)
+    return zone, name
+
+
+def resolve_zone(settings: Optional[Dict[str, Any]] = None):
+    """``(zone, name, warnings)``: like ``project_zone``, plus a note when a named zone was rejected."""
+    warnings: List[str] = []
     name = str(_cfg("time_zone", settings) or "").strip() or (os.environ.get("TZ") or "").strip()
     if name:
         try:
             from zoneinfo import ZoneInfo
 
-            return ZoneInfo(name), name
+            return ZoneInfo(name), name, warnings
         except Exception:  # noqa: BLE001 - bad name: fall back to the host zone
-            pass
+            warnings.append(f"time zone {name[:64]!r} was not recognised; using the host zone instead")
     host = _host_zone_name()
     if host:
         try:
             from zoneinfo import ZoneInfo
 
-            return ZoneInfo(host), host
+            return ZoneInfo(host), host, warnings
         except Exception:  # noqa: BLE001
             pass
     # Last resort: a fixed offset. Summer and winter commits may then sit an hour off.
     tz = datetime.now().astimezone().tzinfo
-    return tz, str(tz or "local")
+    return tz, str(tz or "local"), warnings
 
 
 def _host_zone_name() -> str:
@@ -1257,7 +1264,7 @@ def summarize(
         commits = uniq
     commits.sort(key=lambda c: (c["dt"], c["sha"]))  # one instant order, whatever the offsets
 
-    zone, zone_name = project_zone(settings)
+    zone, zone_name, zone_warnings = resolve_zone(settings)
     thresholds = {
         "quiet_gap_days": GAP_MIN_DAYS,
         "signal_merge_days": SIGNAL_MERGE_DAYS,
@@ -1274,6 +1281,7 @@ def summarize(
         "mailmap": bool(repo_doc.get("mailmap")),
         "devarch_pin": DEVARCH_PIN,
         "time_zone": zone_name,
+        "warnings": zone_warnings,
         "thresholds": thresholds,
         "config_hash": _sha(
             {
