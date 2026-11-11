@@ -1,7 +1,8 @@
 {
   "version": 1,
   "test_globs": [
-    "tests/test_*.py"
+    "tests/test_*.py",
+    "plugins/ag4te-hermes/tests/test_*.py"
   ],
   "dependency_files": [
     "setup.py",
@@ -35,7 +36,8 @@
         "archaeology",
         "scripts",
         "setup.py",
-        "tests"
+        "tests",
+        "plugins/ag4te-hermes"
       ]
     },
     {
@@ -57,6 +59,7 @@
         "-m",
         "pytest",
         "tests",
+        "plugins/ag4te-hermes/tests",
         "-q",
         "--tb=short",
         "-p",
