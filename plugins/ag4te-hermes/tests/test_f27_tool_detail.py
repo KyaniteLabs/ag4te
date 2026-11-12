@@ -62,7 +62,9 @@ def test_unknown_detail_is_an_error(monkeypatch):
 def test_gateway_stays_summary_only_even_for_full(monkeypatch):
     setup(monkeypatch)
     monkeypatch.setattr(ag, "_on_gateway", lambda: True)
-    assert set(json.loads(ag._tool({"project": "demo", "detail": "full"}))) - {"notice"} == {"summary"}
+    assert set(json.loads(ag._tool({"project": "demo", "detail": "full"}))) - {"notice"} == {
+        "summary"
+    }
 
 
 def test_schema_declares_detail():

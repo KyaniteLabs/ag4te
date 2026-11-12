@@ -1,7 +1,6 @@
 """Wave 4: repo-derived dict keys are untrusted too, the 503 never repeats a home path, and the tool says project is needed."""
 
 import importlib.util
-import json
 import logging
 import sys
 import types

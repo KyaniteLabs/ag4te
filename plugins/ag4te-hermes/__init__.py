@@ -44,7 +44,6 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-
 def _manifest_name(default: str = "ag4te") -> str:
     """The plugin id: ``name:`` in plugin.yaml next to this file, which is also the key Hermes keeps
     settings under. The source folder is ag4te-hermes, so the folder name is not it."""
@@ -254,7 +253,10 @@ def _cfg(key: str, settings: Optional[Dict[str, Any]] = None) -> Any:
     except Exception as exc:  # noqa: BLE001
         if not _config_warned:  # once: a broken config store would otherwise repeat on every read
             _config_warned = True
-            logger.warning("ag4te: reading the plugin config failed (%s); using the defaults", type(exc).__name__)
+            logger.warning(
+                "ag4te: reading the plugin config failed (%s); using the defaults",
+                type(exc).__name__,
+            )
         val = None
     return DEFAULTS[key] if val is None else val
 
@@ -1063,7 +1065,9 @@ def resolve_zone(settings: Optional[Dict[str, Any]] = None):
 
             return ZoneInfo(name), name, warnings
         except Exception:  # noqa: BLE001 - bad name: fall back to the host zone
-            warnings.append(f"time zone {name[:64]!r} was not recognised; using the host zone instead")
+            warnings.append(
+                f"time zone {name[:64]!r} was not recognised; using the host zone instead"
+            )
     host = _host_zone_name()
     if host:
         try:
@@ -2640,8 +2644,9 @@ def _tool(args: Dict[str, Any], **_: Any) -> str:
     cap, more = (TOOL_TEXT_CAP_FULL, _MORE_FULL) if full else (TOOL_TEXT_CAP, _MORE_BRIEF)
     doc = _cap_strings(doc, cap, more)
     if summary is not None:
-        doc["summary"] = (f"{UNTRUSTED_OPEN}\n{_untrusted(summary, TOOL_SUMMARY_CAP, more)}\n"
-                          f"{UNTRUSTED_CLOSE}")
+        doc["summary"] = (
+            f"{UNTRUSTED_OPEN}\n{_untrusted(summary, TOOL_SUMMARY_CAP, more)}\n{UNTRUSTED_CLOSE}"
+        )
     doc["notice"] = UNTRUSTED_NOTICE
     return json.dumps(doc)
 

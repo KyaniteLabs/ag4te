@@ -1,4 +1,5 @@
 """The README may not say "fully local / no external services" while generated pages load a CDN."""
+
 import re
 from pathlib import Path
 
@@ -15,4 +16,6 @@ def test_readme_does_not_overclaim_local_only():
 def test_readme_says_where_the_network_is_used():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     assert re.search(r"CDN", text) and re.search(r"Chart\.js", text)
-    assert re.search(r"mining and analysis (run|happen)s? (entirely )?(locally|on your machine)", text, re.I)
+    assert re.search(
+        r"mining and analysis (run|happen)s? (entirely )?(locally|on your machine)", text, re.I
+    )

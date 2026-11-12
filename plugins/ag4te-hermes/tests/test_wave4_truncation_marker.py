@@ -1,9 +1,9 @@
 """A cut tool reply says how much was cut and how to get the rest (wave 4)."""
+
 import json
 import re
 
 import pytest
-
 from test_summary import ag
 
 
@@ -67,6 +67,7 @@ def test_short_keys_are_untouched_and_a_third_collision_gets_its_own_number():
 
 def test_cap_strings_collision_suffixing_is_linear_and_within_cap():
     import time
+
     cap = 40
     keys = ["k" * 100 + str(i) for i in range(3000)]
     t0 = time.perf_counter()

@@ -1,4 +1,5 @@
 """CI installs its own tooling (pip, build, twine) at exact versions, so a new release cannot change a build unseen."""
+
 import re
 from pathlib import Path
 

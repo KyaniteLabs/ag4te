@@ -18,7 +18,9 @@ def _load(name, path):
 
 def _renamed_copy(tmp_path, new_name):
     dst = tmp_path / "plug"
-    shutil.copytree(PKG, dst, ignore=shutil.ignore_patterns("tests", "__pycache__", "desktop", "docs"))
+    shutil.copytree(
+        PKG, dst, ignore=shutil.ignore_patterns("tests", "__pycache__", "desktop", "docs")
+    )
     manifest = dst / "plugin.yaml"
     manifest.write_text(manifest.read_text().replace("name: ag4te\n", f"name: {new_name}\n", 1))
     return dst

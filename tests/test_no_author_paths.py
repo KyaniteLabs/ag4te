@@ -1,6 +1,6 @@
 """No default points at the author's own folders: a path comes from a flag or an environment variable."""
+
 import importlib.util
-import os
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -8,8 +8,14 @@ from click.testing import CliRunner
 from archaeology.cli import main
 
 ROOT = Path(__file__).resolve().parents[1]
-AUTHOR_MARKERS = ("Desktop/OMC", "Desktop/GITHUB_pipeline", "workspaces/GITHUB_pipeline", "dev/GITHUB_pipeline",
-                  "MyStuff", "-Users-user-")
+AUTHOR_MARKERS = (
+    "Desktop/OMC",
+    "Desktop/GITHUB_pipeline",
+    "workspaces/GITHUB_pipeline",
+    "dev/GITHUB_pipeline",
+    "MyStuff",
+    "-Users-user-",
+)
 
 
 def test_no_author_folder_is_named_in_the_cli_or_the_regeneration_script():
@@ -60,7 +66,9 @@ def test_ingest_pipeline_reads_the_logs_under_archaeology_pipeline_root(tmp_path
 
 def _regen(monkeypatch):
     monkeypatch.setenv("ARCHAEOLOGY_SOURCE_REPO", str(ROOT))
-    spec = importlib.util.spec_from_file_location("regen_under_test", ROOT / "scripts" / "data" / "regenerate_all.py")
+    spec = importlib.util.spec_from_file_location(
+        "regen_under_test", ROOT / "scripts" / "data" / "regenerate_all.py"
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -78,8 +86,11 @@ def test_private_mining_uses_the_dirs_and_export_given_on_the_command_line(monke
     mod = _regen(monkeypatch)
     ran = []
     monkeypatch.setattr(mod, "run", lambda cmd, **kw: ran.append(cmd) or "")
-    mod.mine_private_sessions(ROOT, claude_sessions=[(str(tmp_path / "s1"), "one")],
-                              chatgpt_export=str(tmp_path / "c.json"))
+    mod.mine_private_sessions(
+        ROOT,
+        claude_sessions=[(str(tmp_path / "s1"), "one")],
+        chatgpt_export=str(tmp_path / "c.json"),
+    )
     flat = [" ".join(map(str, c)) for c in ran]
     assert any("claude" in f and str(tmp_path / "s1") in f and "--prefix one" in f for f in flat)
     assert any("chatgpt" in f and str(tmp_path / "c.json") in f for f in flat)

@@ -1,4 +1,5 @@
 """Wave 2 extras: X-SHLEX, A-tz, A-inject, A-perf."""
+
 import json
 import tracemalloc
 
@@ -8,12 +9,21 @@ from test_summary import ag, make_project
 # ---- X-SHLEX
 def test_windows_paths_keep_their_backslashes():
     cmd = r'"C:\Program Files\uv\uvx.exe" --from devarch'
-    assert ag._split_command(cmd, windows=True) == [r"C:\Program Files\uv\uvx.exe", "--from", "devarch"]
+    assert ag._split_command(cmd, windows=True) == [
+        r"C:\Program Files\uv\uvx.exe",
+        "--from",
+        "devarch",
+    ]
     assert ag._split_command(r"C:\tools\dev.cmd run", windows=True) == [r"C:\tools\dev.cmd", "run"]
 
 
 def test_posix_splitting_is_unchanged():
-    assert ag._split_command(r"uvx --from 'a b' c\ d", windows=False) == ["uvx", "--from", "a b", "c d"]
+    assert ag._split_command(r"uvx --from 'a b' c\ d", windows=False) == [
+        "uvx",
+        "--from",
+        "a b",
+        "c d",
+    ]
 
 
 # ---- A-tz
@@ -33,8 +43,12 @@ def test_tool_output_marks_repo_text_untrusted_and_capped(tmp_path, monkeypatch)
     monkeypatch.setattr(ag, "load_dig", lambda p: {"empty": False})
     monkeypatch.setattr(ag, "brief", lambda d: evil)
     out = json.loads(ag._tool({"project": "demo"}))
-    assert out["summary"].startswith(ag.UNTRUSTED_OPEN) and out["summary"].endswith(ag.UNTRUSTED_CLOSE)
-    assert out["summary"].count(ag.UNTRUSTED_CLOSE) == 1  # a planted closer cannot end the block early
+    assert out["summary"].startswith(ag.UNTRUSTED_OPEN) and out["summary"].endswith(
+        ag.UNTRUSTED_CLOSE
+    )
+    assert (
+        out["summary"].count(ag.UNTRUSTED_CLOSE) == 1
+    )  # a planted closer cannot end the block early
     assert len(out["summary"]) < ag.TOOL_SUMMARY_CAP + 100
     assert "untrusted" in out["notice"]
 
@@ -56,7 +70,8 @@ def _write_log(path, commits=50_000):
             fh.write(
                 f"\x1e{i:040x}\x1f\x1f2026-03-{day:02d}T{i % 24:02d}:10:00-07:00\x1f"
                 f"2026-03-{day:02d}T{i % 24:02d}:10:00-07:00\x1fAda\x1fada@example.com\x1fAda\x1f"
-                f"ada@example.com\x1ffix: change {i}\x1f\n\n")
+                f"ada@example.com\x1ffix: change {i}\x1f\n\n"
+            )
             for j in range(4):
                 fh.write(f"{j + 1}\t{j}\tsrc/module_{(i + j) % 300}/file_{j}.py\n")
 

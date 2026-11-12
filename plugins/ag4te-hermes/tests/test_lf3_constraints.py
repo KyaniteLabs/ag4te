@@ -25,13 +25,13 @@ def test_default_command_line_uses_the_constraints_file():
 def test_constraints_pin_every_package_exactly_for_this_devarch_commit():
     text = LOCK.read_text(encoding="utf-8")
     assert ag.DEVARCH_PIN in text.split("\n\n")[0] or ag.DEVARCH_PIN in text[:600]
-    pins = [l for l in text.splitlines() if l and not l.startswith("#")]
+    pins = [line for line in text.splitlines() if line and not line.startswith("#")]
     assert len(pins) >= 30
     for line in pins:
         assert re.match(r"^[A-Za-z0-9_.-]+==[0-9][^ ;]*( ; .+)?$", line), line
-    names = {l.split("==")[0].lower() for l in pins}
+    names = {p.split("==")[0].lower() for p in pins}
     assert {"click", "sqlite-utils", "datasette"} <= names
-    assert not any("@" in l or "git+" in l for l in pins)  # no unpinned URLs
+    assert not any("@" in p or "git+" in p for p in pins)  # no unpinned URLs
 
 
 def test_every_default_setting_still_parses():

@@ -14,8 +14,10 @@ def _steps():
 
 def test_profile_lints_the_plugin():
     steps, _ = _steps()
-    lint = next(a for a in steps.values() if a[0].endswith("ruff"))
-    assert PLUGIN in lint
+    ruff = [a for a in steps.values() if a[0].endswith("ruff")]
+    # Same commands as GitHub CI: a full-repo check (covers the plugin) and a format check.
+    assert [".venv/bin/ruff", "check", "."] in ruff
+    assert [".venv/bin/ruff", "format", "--check", "."] in ruff
 
 
 def test_profile_runs_the_plugin_tests():

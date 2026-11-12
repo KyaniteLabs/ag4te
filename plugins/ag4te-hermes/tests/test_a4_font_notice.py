@@ -4,7 +4,9 @@ import re
 from pathlib import Path
 
 PKG = Path(__file__).resolve().parent.parent
-FONT_COPYRIGHT = "Copyright 2018 The Chakra Petch Project Authors (https://github.com/m4rc1e/Chakra-Petch.git)"
+FONT_COPYRIGHT = (
+    "Copyright 2018 The Chakra Petch Project Authors (https://github.com/m4rc1e/Chakra-Petch.git)"
+)
 
 
 def test_ofl_text_ships_with_the_fonts():

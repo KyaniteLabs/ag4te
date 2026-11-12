@@ -7,8 +7,18 @@ PKG = Path(__file__).resolve().parent.parent
 MANIFEST = (PKG / "plugin.yaml").read_text(encoding="utf-8")
 # Keys the Hermes v0.23 validator accepts (the Epoch and tastecheck manifests, which pass it, use them).
 KNOWN_TOP_LEVEL = {
-    "name", "version", "manifest_version", "requires_hermes", "description", "author",
-    "license", "homepage", "tags", "requires_env", "provides_tools", "config_schema",
+    "name",
+    "version",
+    "manifest_version",
+    "requires_hermes",
+    "description",
+    "author",
+    "license",
+    "homepage",
+    "tags",
+    "requires_env",
+    "provides_tools",
+    "config_schema",
 }
 
 
@@ -24,7 +34,9 @@ def test_license_matches_the_license_file():
 
 
 def test_author_is_the_git_author():
-    assert _top("author") == "Kyanite Labs"  # company standard, as in the Epoch and tastecheck manifests
+    assert (
+        _top("author") == "Kyanite Labs"
+    )  # company standard, as in the Epoch and tastecheck manifests
 
 
 def test_manifest_uses_only_keys_the_host_accepts():

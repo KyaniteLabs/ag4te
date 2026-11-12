@@ -36,9 +36,7 @@ def _stub_plugin(raises):
     def start_dig(*a, **k):
         raise raises(DigError, DigBusyError)
 
-    return types.SimpleNamespace(
-        DigError=DigError, DigBusyError=DigBusyError, start_dig=start_dig
-    )
+    return types.SimpleNamespace(DigError=DigError, DigBusyError=DigBusyError, start_dig=start_dig)
 
 
 def test_status_comes_from_the_exception_type_not_its_words(monkeypatch):
