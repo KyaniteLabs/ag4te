@@ -46,6 +46,18 @@ def test_cancel_returns_fast_and_leaves_no_process_in_the_group(tmp_path, monkey
 
 
 def _group_alive(pgid):
+    """True while a group member still runs. Zombies do not count: in a CI container
+    the orphaned grandchild is reparented to a PID 1 that may never reap it."""
+    proc = Path("/proc")
+    if proc.is_dir():
+        for stat in proc.glob("[0-9]*/stat"):
+            try:
+                fields = stat.read_text().rsplit(")", 1)[1].split()
+            except OSError:
+                continue
+            if int(fields[2]) == pgid and fields[0] != "Z":
+                return True
+        return False
     try:
         os.killpg(pgid, 0)
         return True
