@@ -31,9 +31,12 @@ an explicit parameter or a separate function here, not a hidden branch:
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -786,7 +789,6 @@ def cascade(
 
     from .classifiers.era_detector import detect_signals
     from .era_cascade import cascade as run_cascade
-    from .extractors.git import extract_git_log, extract_git_log_with_stats
 
     project_dir = Path(project.resolve())
     project_json_path = project_dir / "project.json"
@@ -811,19 +813,19 @@ def cascade(
             say(f"  SKIP: repo_path not found ({repo_path}). Use --skip-mine to skip mining.")
         else:
             say(f"\n[1/7] Mining git data from {repo_path}...")
-            csv_path = data_dir / "github-commits.csv"
-            try:
-                require_git_repo(repo_path)
-                count = extract_git_log(repo_path, str(csv_path))
-                say(f"  Extracted {count} commits")
-            except (RuntimeError, Exception) as e:
-                say(f"  Error: Git extraction failed: {e}", err=True)
-                return CascadeOutcome(1)
-            stats_path = data_dir / "github-commits-with-stats.txt"
-            try:
-                extract_git_log_with_stats(repo_path, str(stats_path))
-            except (RuntimeError, Exception) as e:
-                say(f"  Error: Git stats extraction failed: {e}", err=True)
+            stage = ["Git extraction"]
+
+            def on_event(event, detail):
+                if event == "csv-done":
+                    say(f"  Extracted {detail} commits")
+                    stage[0] = "Git stats extraction"
+                elif event == "stats-done":
+                    stage[0] = "Mining"
+
+            try:  # the checked `mine` path, as in sync
+                mine(repo_path, project, on_event=on_event)
+            except Exception as e:  # noqa: BLE001 - reported as the cascade's exit status
+                say(f"  Error: {stage[0]} failed: {e}", err=True)
                 return CascadeOutcome(1)
     else:
         say("\n[1/7] Mining — SKIPPED (--skip-mine)")
@@ -936,10 +938,7 @@ class SyncOutcome:
 
     exit_code: int = 0
     project_statuses: dict[str, str] = field(default_factory=dict)
-
-    @property
-    def built_count(self) -> int:
-        return sum(status == "built" for status in self.project_statuses.values())
+    built_count: int = 0
 
     @property
     def failed_count(self) -> int:
@@ -977,7 +976,6 @@ def sync(
 
     from .analysis_runner import VectorOutcome, classify_vector_outcome, run_analysis_vectors
     from .classifiers.era_detector import detect_signals
-    from .extractors.git import extract_git_log, extract_git_log_with_stats
 
     if profile_path is None:
         profile_path = _resolve_profile_path()
@@ -1085,27 +1083,44 @@ def sync(
         say("Error: unknown project name(s); nothing was synced.", err=True)
         return SyncOutcome(1)
 
+    try:
+        if importlib.util.find_spec("sqlite_utils") is None:
+            raise ModuleNotFoundError("sqlite_utils")
+        importlib.import_module("sqlite_utils")
+    except ImportError:
+        from .db.builder import sqlite_utils_missing_message
+
+        say(sqlite_utils_missing_message(), err=True)
+        return SyncOutcome(1)
+
     say(f"Syncing {len(targets)} project(s)...\n")
+    project_statuses = {}
 
     # Ensure all project dirs exist
     for proj in targets:
         proj_dir = os.path.join("projects", proj["name"])
-        if not os.path.isdir(proj_dir):
-            say(f"  Initializing {proj['name']}...")
-            os.makedirs(os.path.join(proj_dir, "data"), exist_ok=True)
-            os.makedirs(os.path.join(proj_dir, "deliverables"), exist_ok=True)
-            config = {
-                "name": proj["name"],
-                "repo_path": os.path.expanduser(proj["repo_path"]),
-                "repo_url": proj.get("repo_url", ""),
-                "developer": profile.get("developer", {}),
-            }
-            with open(os.path.join(proj_dir, "project.json"), "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2)
+        try:
+            if not os.path.isdir(proj_dir):
+                say(f"  Initializing {proj['name']}...")
+                os.makedirs(os.path.join(proj_dir, "data"), exist_ok=True)
+                os.makedirs(os.path.join(proj_dir, "deliverables"), exist_ok=True)
+                config = {
+                    "name": proj["name"],
+                    "repo_path": os.path.expanduser(proj["repo_path"]),
+                    "repo_url": proj.get("repo_url", ""),
+                    "developer": profile.get("developer", {}),
+                }
+                with open(os.path.join(proj_dir, "project.json"), "w", encoding="utf-8") as f:
+                    json.dump(config, f, indent=2)
+        except OSError as exc:
+            say(f"  Initialization failed for {proj['name']}: {exc}", err=True)
+            project_statuses[proj["name"]] = "failed"
 
     # Phase 1: Mine each project
     if not skip_mine:
         for proj in targets:
+            if project_statuses.get(proj["name"]) == "failed":
+                continue
             repo_path = os.path.expanduser(proj["repo_path"])
             try:
                 require_git_repo(repo_path)
@@ -1116,30 +1131,44 @@ def sync(
                     else str(exc).replace("Not a git repository", "not a git repo", 1)
                 )
                 say(f"  SKIP {proj['name']}: {reason}", err=True)
+                project_statuses[proj["name"]] = "failed"
+                continue
+            except RuntimeError as exc:
+                say(f"  SKIP {proj['name']}: {exc}", err=True)
+                project_statuses[proj["name"]] = "failed"
                 continue
 
             say(f"  Mining {proj['name']}...")
 
-            data_dir = os.path.join("projects", proj["name"], "data")
-            csv_path = os.path.join(data_dir, "github-commits.csv")
-            try:
-                count = extract_git_log(repo_path, csv_path, verbose=verbose)
-                say(f"    {count} commits extracted")
-            except (RuntimeError, Exception) as e:
-                say(f"    Error: Git extraction failed: {e}", err=True)
-                continue
+            # The same checked path as `mine`: shallow refusal, ref-change detection
+            # and the coverage.json evidence binding that audit verifies.
+            stage = ["Git extraction"]
 
-            stats_path = os.path.join(data_dir, "github-commits-with-stats.txt")
+            def on_event(event, detail, stage=stage):
+                if event == "csv-done":
+                    say(f"    {detail} commits extracted")
+                    stage[0] = "Git stats extraction"
+                elif event == "stats-done":
+                    stage[0] = "Mining"
+
             try:
-                extract_git_log_with_stats(repo_path, stats_path, verbose=verbose)
-            except (RuntimeError, Exception) as e:
-                say(f"    Error: Git stats extraction failed: {e}", err=True)
+                result = mine(
+                    repo_path, ProjectRef(proj["name"]), verbose=verbose, on_event=on_event
+                )
+            except Exception as e:  # noqa: BLE001 - one project must not abort the rest
+                say(f"    Error: {stage[0]} failed: {e}", err=True)
+                project_statuses[proj["name"]] = "failed"
+                continue
+            if result.commits == 0:
+                say(f"  SKIP {proj['name']}: no commits yet", err=True)
+                project_statuses[proj["name"]] = "skipped"
                 continue
 
     # Phase 1.5: Build DBs
-    project_statuses = {}
     for proj in targets:
         proj_name = proj["name"]
+        if project_statuses.get(proj_name) in ("failed", "skipped"):
+            continue
         db_path = os.path.join("projects", proj_name, "data", "archaeology.db")
         say(f"  Building DB for {proj_name}...")
 
@@ -1158,21 +1187,39 @@ def sync(
         _env["PYTHONPATH"] = _pkg_root + (
             (os.pathsep + _env["PYTHONPATH"]) if _env.get("PYTHONPATH") else ""
         )
-        result = subprocess.run(cmd, capture_output=not verbose, check=True, timeout=300, env=_env)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=_env)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            project_statuses[proj_name] = "failed"
+            say(f"    DB build failed for {proj_name}: {exc}", err=True)
+            continue
+        if verbose and result.stdout:
+            say(result.stdout.rstrip())
+        if verbose and result.stderr:
+            say(result.stderr.rstrip(), err=True)
         if result.returncode == 0 and os.path.exists(db_path):
             say("    DB built")
             project_statuses[proj_name] = "built"
         else:
             project_statuses[proj_name] = "failed"
-            say(f"    DB build failed (exit {result.returncode})", err=True)
+            say(f"    DB build failed for {proj_name} (exit {result.returncode})", err=True)
+            if result.stderr and not verbose:
+                say("\n".join(result.stderr.splitlines()[-20:]), err=True)
 
     # Phase 2: Detect signals
     should_detect_signals = sync_cfg.get("run_signals", True) and not skip_signals
     if should_detect_signals:
         min_gap = sync_cfg.get("default_min_gap_days", 3)
         for proj in targets:
+            if project_statuses.get(proj["name"]) != "built":
+                continue
             say(f"  Detecting signals for {proj['name']}...")
-            result = detect_signals(proj["name"], config={"min_gap_days": min_gap})
+            try:
+                result = detect_signals(proj["name"], config={"min_gap_days": min_gap})
+            except Exception as exc:  # noqa: BLE001 - one project must not abort the rest
+                say(f"    Signal detection failed for {proj['name']}: {exc}", err=True)
+                project_statuses[proj["name"]] = "failed"
+                continue
             sig_count = len(result.get("signals", []))
             cluster_count = len(result.get("cluster_summary", []))
             say(f"    {sig_count} signals, {cluster_count} clusters")
@@ -1182,6 +1229,8 @@ def sync(
     if run_auto_analysis:
         say("\nRunning automated analysis vectors...")
         for proj in targets:
+            if project_statuses.get(proj["name"]) != "built":
+                continue
             say(f"  Analyzing {proj['name']}...")
             try:
                 results = run_analysis_vectors(proj["name"], verbose=verbose)
@@ -1190,20 +1239,41 @@ def sync(
                         say(f"    ✓ {vector}")
                     else:
                         say(f"    ✗ {vector}: {path}")
-            except Exception as e:
-                say(f"    Analysis failed: {e}", err=True)
+                        project_statuses[proj["name"]] = "failed"
+            except Exception as e:  # noqa: BLE001 - one project must not abort the rest
+                say(f"    Analysis failed for {proj['name']}: {e}", err=True)
+                project_statuses[proj["name"]] = "failed"
 
     # Phase 4: Aggregate into global/
     say("\nAggregating global data...")
-    _aggregate_global(targets, profile, verbose=verbose, on_line=on_line)
-    say("Sync complete.")
-    return SyncOutcome(0, project_statuses)
+    successful = [p for p in targets if project_statuses.get(p["name"]) == "built"]
+    if successful:
+        _aggregate_global(successful, profile, verbose=verbose, on_line=on_line)
+    failed = [name for name, status in project_statuses.items() if status == "failed"]
+    skipped = [name for name, status in project_statuses.items() if status == "skipped"]
+    built_count = len(successful)
+    if failed:
+        if successful:
+            built_names = ", ".join(p["name"] for p in successful)
+            say(f"  Note: global/ reflects only: {built_names}", err=True)
+        else:
+            say("  Note: no project built; global/ was not updated", err=True)
+    summary = f"{built_count} built, {len(failed)} failed"
+    if failed:
+        summary += ": " + ", ".join(failed)
+    if skipped:
+        summary += f"; {len(skipped)} skipped: " + ", ".join(skipped)
+    say(summary, err=bool(failed))
+    if failed:
+        say("Sync finished with failures.", err=True)
+    else:
+        say("Sync complete.")
+    return SyncOutcome(int(bool(failed)), project_statuses, built_count)
 
 
 def _aggregate_global(targets, profile, verbose=False, on_line=None):
     """Merge per-project data into global/ for cross-project narrative."""
     import csv
-    import sqlite3
 
     def say(text, err=False):
         if on_line:

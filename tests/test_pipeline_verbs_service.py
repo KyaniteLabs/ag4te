@@ -484,8 +484,355 @@ def test_sync_names_the_enclosing_repository_for_a_subfolder(tmp_path, monkeypat
     workspace.mkdir()
     monkeypatch.chdir(workspace)
     lines = Lines()
-    pipeline.sync(None, profile_path=str(profile), on_line=lines)
+    outcome = pipeline.sync(None, profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 1
     assert "inside the repository at" in lines.text()
+
+
+def test_sync_isolates_builder_failures(tmp_path, monkeypatch):
+    import sqlite3
+
+    from click.testing import CliRunner
+
+    from archaeology import analysis_runner
+    from archaeology.classifiers import era_detector
+    from archaeology.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "projects": [
+                    {"name": name, "repo_path": str(tmp_path)} for name in ("one", "bad", "three")
+                ],
+                "sync": {"run_signals": True, "run_analysis": True},
+            }
+        )
+    )
+    monkeypatch.setattr(pipeline, "_resolve_profile_path", lambda: str(profile))
+
+    def build(cmd, **kwargs):
+        project = Path(cmd[cmd.index("--project-root") + 1])
+        if project.name == "bad":
+            if kwargs.get("check"):
+                raise subprocess.CalledProcessError(1, cmd, stderr="builder denied access")
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="builder denied access")
+        db = project / "data" / "archaeology.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE commits (date TEXT)")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    seen_signals = []
+    seen_analysis = []
+
+    def detect(name, config):
+        seen_signals.append(name)
+        return {"signals": [], "cluster_summary": []}
+
+    def analyze(name, verbose=False):
+        seen_analysis.append(name)
+        return {}
+
+    monkeypatch.setattr(era_detector, "detect_signals", detect)
+    monkeypatch.setattr(analysis_runner, "run_analysis_vectors", analyze)
+    monkeypatch.setattr(pipeline.subprocess, "run", build)
+    result = CliRunner().invoke(main, ["sync", "--skip-mine"])
+    assert result.exit_code == 1
+    assert "builder denied access" in result.output
+    assert "2 built" in result.output and "1 failed" in result.output and "bad" in result.output
+    assert (tmp_path / "projects/one/data/archaeology.db").exists()
+    assert (tmp_path / "projects/three/data/archaeology.db").exists()
+    assert seen_signals == ["one", "three"]
+    assert seen_analysis == ["one", "three"]
+    assert "Traceback" not in result.output
+
+
+def test_sync_missing_sqlite_utils_fails_before_writes(tmp_path, monkeypatch):
+    import importlib.util
+
+    monkeypatch.chdir(tmp_path)
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"projects": [{"name": "one", "repo_path": str(tmp_path)}]}))
+    original = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: None if name == "sqlite_utils" else original(name)
+    )
+    lines = Lines()
+    outcome = pipeline.sync(None, profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 1
+    assert "sqlite-utils is not installed" in lines.text()
+    assert not (tmp_path / "projects").exists()
+
+
+def test_build_db_child_failure_is_clean(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from archaeology.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "projects/demo/data").mkdir(parents=True)
+
+    def fail(cmd, **kwargs):
+        raise subprocess.CalledProcessError(1, cmd, stderr="builder denied access")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    result = CliRunner().invoke(main, ["build-db", "demo"])
+    assert result.exit_code == 1
+    assert "builder denied access" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_sync_continues_after_signal_failure(tmp_path, monkeypatch):
+    import sqlite3
+
+    from archaeology.classifiers import era_detector
+
+    monkeypatch.chdir(tmp_path)
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "projects": [
+                    {"name": name, "repo_path": str(tmp_path)} for name in ("bad", "good")
+                ],
+                "sync": {"run_signals": True, "run_analysis": False},
+            }
+        )
+    )
+
+    def build(cmd, **kwargs):
+        project = Path(cmd[cmd.index("--project-root") + 1])
+        with sqlite3.connect(project / "data" / "archaeology.db") as conn:
+            conn.execute("CREATE TABLE commits (date TEXT)")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    seen = []
+
+    def detect(name, config):
+        seen.append(name)
+        if name == "bad":
+            raise RuntimeError("broken signal data")
+        return {"signals": [], "cluster_summary": []}
+
+    monkeypatch.setattr(pipeline.subprocess, "run", build)
+    monkeypatch.setattr(era_detector, "detect_signals", detect)
+    lines = Lines()
+    outcome = pipeline.sync(None, skip_mine=True, profile_path=str(profile), on_line=lines)
+    assert seen == ["bad", "good"]
+    assert outcome.exit_code == 1
+    assert "broken signal data" in lines.text()
+
+
+def test_sync_continues_when_project_initialization_fails(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.chdir(tmp_path)
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    (projects / "bad").write_text("not a directory")
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "projects": [
+                    {"name": name, "repo_path": str(tmp_path)} for name in ("bad", "good")
+                ],
+                "sync": {"run_signals": False, "run_analysis": False},
+            }
+        )
+    )
+
+    def build(cmd, **kwargs):
+        project = Path(cmd[cmd.index("--project-root") + 1])
+        with sqlite3.connect(project / "data" / "archaeology.db") as conn:
+            conn.execute("CREATE TABLE commits (date TEXT)")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(pipeline.subprocess, "run", build)
+    lines = Lines()
+    outcome = pipeline.sync(None, skip_mine=True, profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 1
+    assert outcome.project_statuses == {"bad": "failed", "good": "built"}
+    assert (projects / "good/data/archaeology.db").exists()
+
+
+def test_single_project_child_error_omits_traceback(capfd):
+    import sys
+
+    import click
+    from click.testing import CliRunner
+
+    from archaeology.cli import _run_child
+
+    @click.command()
+    def run():
+        _run_child(
+            [
+                sys.executable,
+                "-c",
+                "raise RuntimeError(bytes.fromhex('6368696c642064657461696c').decode())",
+            ]
+        )
+
+    result = CliRunner().invoke(run)
+    captured = capfd.readouterr()
+    assert result.exit_code == 1
+    assert "child detail" in result.output
+    assert "Traceback" not in result.output + captured.err
+
+
+def _two_project_profile(tmp_path, *, signals=True):
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "projects": [
+                    {"name": name, "repo_path": str(tmp_path)} for name in ("bad", "good")
+                ],
+                "sync": {"run_signals": signals, "run_analysis": False},
+            }
+        )
+    )
+    return profile
+
+
+def _fake_builder(cmd, **kwargs):
+    import sqlite3
+
+    project = Path(cmd[cmd.index("--project-root") + 1])
+    with sqlite3.connect(project / "data" / "archaeology.db") as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS commits (date TEXT)")
+    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+
+def test_sync_isolates_unexpected_errors_and_counts_final_status(tmp_path, monkeypatch):
+    from archaeology.classifiers import era_detector
+
+    monkeypatch.chdir(tmp_path)
+    profile = _two_project_profile(tmp_path)
+    seen = []
+
+    def detect(name, config):
+        seen.append(name)
+        if name == "bad":
+            raise TypeError("'<' not supported between instances of 'int' and 'str'")
+        return {"signals": [], "cluster_summary": []}
+
+    monkeypatch.setattr(pipeline.subprocess, "run", _fake_builder)
+    monkeypatch.setattr(era_detector, "detect_signals", detect)
+    lines = Lines()
+    outcome = pipeline.sync(None, skip_mine=True, profile_path=str(profile), on_line=lines)
+    assert seen == ["bad", "good"]
+    assert outcome.project_statuses == {"bad": "failed", "good": "built"}
+    assert outcome.built_count == 1
+    assert "1 built, 1 failed: bad" in lines.text()
+
+
+def test_sync_failure_is_not_reported_as_complete(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    profile = _two_project_profile(tmp_path, signals=False)
+
+    def build(cmd, **kwargs):
+        if Path(cmd[cmd.index("--project-root") + 1]).name == "bad":
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+        return _fake_builder(cmd, **kwargs)
+
+    monkeypatch.setattr(pipeline.subprocess, "run", build)
+    lines = Lines()
+    outcome = pipeline.sync(None, skip_mine=True, profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 1
+    assert "Sync complete." not in lines.text()
+    assert ("Sync finished with failures.", True) in lines.items
+    assert any("global/ reflects only: good" in t and err for t, err in lines.items)
+
+
+def test_sync_leaves_global_untouched_and_says_so_when_nothing_built(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    profile = _two_project_profile(tmp_path, signals=False)
+    monkeypatch.setattr(
+        pipeline.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom"),
+    )
+    lines = Lines()
+    outcome = pipeline.sync(None, skip_mine=True, profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 1
+    assert any("global/ was not updated" in t and err for t, err in lines.items)
+
+
+def test_sync_skips_repository_without_commits(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for key, value in GIT_ENV.items():
+        monkeypatch.setenv(key, value)
+    repo = tmp_path / "empty"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"projects": [{"name": "emp", "repo_path": str(repo)}]}))
+    lines = Lines()
+    outcome = pipeline.sync(None, profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 0, lines.text()
+    assert outcome.project_statuses == {"emp": "skipped"}
+    assert "SKIP emp: no commits yet" in lines.text()
+    assert "Traceback" not in lines.text()
+
+
+def test_run_child_timeout_is_clean():
+    import sys
+
+    import click
+    from click.testing import CliRunner
+
+    from archaeology.cli import _run_child
+
+    @click.command()
+    def run():
+        _run_child([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.2)
+
+    result = CliRunner().invoke(run)
+    assert result.exit_code == 1
+    assert "timed out" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_sync_mining_error_of_any_type_skips_only_that_project(tmp_path, monkeypatch):
+    from archaeology.extractors import git as git_extractor
+
+    for name in ("bad", "good"):
+        _make_repo(tmp_path / name)
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "projects": [{"name": n, "repo_path": str(tmp_path / n)} for n in ("bad", "good")],
+                "sync": {"run_signals": False, "run_analysis": False},
+            }
+        )
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    real = git_extractor.extract_git_log
+
+    def extract(repo_path, output_path, verbose=False):
+        if Path(repo_path).name == "bad":
+            raise ValueError("offset must be a timedelta strictly between -24h and 24h")
+        return real(repo_path, output_path, verbose=verbose)
+
+    real_run = subprocess.run
+
+    def run(cmd, **kwargs):
+        if "--project-root" in cmd:
+            return _fake_builder(cmd, **kwargs)
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(git_extractor, "extract_git_log", extract)
+    monkeypatch.setattr(pipeline.subprocess, "run", run)
+    lines = Lines()
+    outcome = pipeline.sync(None, profile_path=str(profile), on_line=lines)
+    assert outcome.project_statuses == {"bad": "failed", "good": "built"}
+    assert "Git extraction failed: offset must be" in lines.text()
+    assert outcome.exit_code == 1
 
 
 def test_mining_keeps_config_passed_through_the_environment(tmp_path, monkeypatch):
@@ -512,3 +859,92 @@ def test_bare_repository_name_with_a_unicode_line_separator_is_accepted(tmp_path
         ["git", "init", "-q", "--bare", str(bare)], check=True, env={**os.environ, **GIT_ENV}
     )
     assert pipeline.require_git_repo(str(bare)) == str(bare)
+
+
+def test_sync_refuses_a_shallow_clone(tmp_path, monkeypatch):
+    source = _make_repo(tmp_path / "source")
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", f"file://{source}", str(shallow)],
+        check=True,
+        env={**os.environ, **GIT_ENV},
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    lines = Lines()
+    outcome = pipeline.sync(None, profile_path=str(_profile(tmp_path, shallow)), on_line=lines)
+    assert outcome.exit_code == 1
+    assert "Shallow history" in lines.text()
+    assert not (workspace / "projects" / "demo" / "data" / "github-commits.csv").exists()
+
+
+def test_sync_rebinds_mining_evidence_so_audit_sees_no_drift(tmp_path, monkeypatch):
+    from archaeology.audit import check_mined_history
+
+    repo = _make_repo(tmp_path / "repo")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    profile = _profile(tmp_path, repo)
+    pipeline.mine(str(repo), ProjectRef("demo"))  # binds coverage.json to the mined bytes
+    (repo / "later.txt").write_text("later\n")
+    for args in (
+        ["add", "-A"],
+        ["-c", "user.name=T", "-c", "user.email=t@e", "commit", "-qm", "later"],
+    ):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, env={**os.environ, **GIT_ENV})
+    assert pipeline.sync(["demo"], profile_path=str(profile), skip_signals=True).exit_code == 0
+    codes = {f.code for f in check_mined_history("demo", workspace)}
+    assert not codes & {
+        "MINING_ARTIFACT_DRIFT",
+        "MINING_HISTORY_DRIFT",
+        "MINING_MANIFEST_INVALID",
+    }, codes
+
+
+def test_cascade_refuses_a_shallow_clone(tmp_path, monkeypatch):
+    source = _make_repo(tmp_path / "source")
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", f"file://{source}", str(shallow)],
+        check=True,
+        env={**os.environ, **GIT_ENV},
+    )
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.chdir(ws)
+    monkeypatch.delenv("DEVARCH_WORKSPACE", raising=False)
+    ref = ProjectRef.for_cli("alpha", must_exist=False)
+    pipeline.init(ref, "Alpha", "")
+    config_path = ws / "projects" / "alpha" / "project.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["repo_path"] = str(shallow)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    lines = Lines()
+    outcome = pipeline.cascade(ref, on_line=lines)
+    assert outcome.exit_code == 1
+    assert "Shallow history" in lines.text()
+    assert not (ws / "projects" / "alpha" / "data" / "github-commits.csv").exists()
+
+
+def test_sync_labels_a_failure_after_extraction_as_mining(tmp_path, monkeypatch):
+    import archaeology.extractors.git as extractor
+
+    repo = _make_repo(tmp_path / "repo")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    real = extractor.repository_coverage
+    calls = []
+
+    def moving_refs(path):  # a different snapshot on every call: refs moved mid-mine
+        calls.append(path)
+        return {**real(path), "snapshot": len(calls)}
+
+    monkeypatch.setattr(extractor, "repository_coverage", moving_refs)
+    lines = Lines()
+    outcome = pipeline.sync(None, profile_path=str(_profile(tmp_path, repo)), on_line=lines)
+    assert outcome.exit_code == 1
+    assert "Error: Mining failed: Repository refs changed" in lines.text()
+    assert "Git stats extraction failed" not in lines.text()

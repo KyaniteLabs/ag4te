@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.1] - Unreleased readiness candidate
 
+- Continue syncing healthy projects after a failure, report the cause and return a failing exit status (#72). A repository with no commits yet is skipped, not failed; a missing repository still fails the run. When any project fails, sync says which projects `global/` reflects. Sync and cascade mine through the same checks as `mine`: shallow clones are refused and the coverage manifest is rebound to the newly mined bytes.
+
 - Accept bare Git mirrors in sync and pipeline mining while preserving errors for corrupt checkouts (#71). Mining ignores an inherited `GIT_DIR` or other Git location variables, and `mine` and sync name the enclosing repository when pointed at a subfolder. Repository paths that are not valid UTF-8 are compared exactly.
 
 - AG4TE Hermes plugin 0.3.0: agent dig reads and progress refresh the open Desktop page through local events; `ag4te_show` points it at a section or item, with live events taking priority over pending REST responses (Forgejo #53).

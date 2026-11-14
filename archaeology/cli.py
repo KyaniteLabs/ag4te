@@ -17,6 +17,26 @@ from .classifiers.era_detector import detect_signals
 from .extractors.git import extract_git_log, extract_git_log_with_stats, repository_coverage
 
 
+def _run_child(cmd, **kwargs):
+    try:
+        result = subprocess.run(cmd, check=True, stderr=subprocess.PIPE, text=True, **kwargs)
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr or exc.output or str(exc)
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", errors="replace")
+        detail = str(detail).strip()
+        if "Traceback (most recent call last):" in detail:
+            detail = detail.splitlines()[-1]
+        raise click.ClickException(detail) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise click.ClickException(
+            f"{Path(str(cmd[0])).name} timed out after {exc.timeout:g}s"
+        ) from exc
+    if result.stderr:
+        click.echo(result.stderr, err=True, nl=False)
+    return result
+
+
 def _check_name(project_name):
     """Reject unsafe project names before any command touches the filesystem."""
     from .pipeline import validate_project_name
@@ -120,7 +140,7 @@ def demo(project_name, force, build_db):
         _env["PYTHONPATH"] = _pkg_root + (
             (os.pathsep + _env["PYTHONPATH"]) if _env.get("PYTHONPATH") else ""
         )
-        result = subprocess.run(cmd, check=True, timeout=300, env=_env)
+        result = _run_child(cmd, timeout=300, env=_env)
         if result.returncode != 0:
             raise click.exceptions.Exit(result.returncode)
 
@@ -210,7 +230,7 @@ def build_db(project_name, verbose):
     _env["PYTHONPATH"] = _pkg_root + (
         (os.pathsep + _env["PYTHONPATH"]) if _env.get("PYTHONPATH") else ""
     )
-    result = subprocess.run(cmd, check=True, timeout=300, env=_env)
+    result = _run_child(cmd, timeout=300, env=_env)
     if result.returncode == 0 and os.path.exists(db_path):
         click.echo(f"Database built at {db_path}")
     else:
@@ -347,7 +367,7 @@ def extract_sessions(project_name, sessions_dir, verbose):
         cmd.extend(["--sessions-dir", sessions_dir])
     cmd.extend(["--project", project_name])
 
-    result = subprocess.run(cmd, check=True, timeout=300)
+    result = _run_child(cmd, timeout=300)
     if result.returncode == 0:
         click.echo(f"Sessions extracted to {output_path}")
     else:
