@@ -245,3 +245,88 @@ def test_cascade_reaches_its_verdict_with_opportunity_disabled(tmp_path, monkeyp
     assert "[7/7] Running opportunity analyzers..." in text
     assert "SKIP: opportunity analyzers are disabled" in text
     assert outcome.exit_code in (0, 1)
+
+
+def test_sync_cli_and_pipeline_share_profile_validation(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from archaeology import cli
+
+    monkeypatch.chdir(tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    profile = config / "profile.json"
+    profile.write_text(json.dumps({"projects": [{"name": "demo"}]}), encoding="utf-8")
+    package_profile = Path(cli.__file__).parent.parent / "config" / "profile.json"
+    real_exists = os.path.exists
+    monkeypatch.setattr(
+        os.path,
+        "exists",
+        lambda p: False if Path(p).resolve() == package_profile.resolve() else real_exists(p),
+    )
+
+    cli_result = CliRunner().invoke(cli.main, ["sync"])
+    lines = Lines()
+    outcome = pipeline.sync(None, profile_path=str(profile), on_line=lines)
+
+    assert outcome.exit_code == cli_result.exit_code == 1
+    assert lines.text() + "\n" == cli_result.output
+
+
+def test_sync_cli_matches_pipeline_on_demo(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from archaeology.cli import main
+
+    repo = _make_repo(tmp_path / "repo")
+    profile = _profile(tmp_path, repo)
+    monkeypatch.setattr(pipeline, "_resolve_profile_path", lambda: str(profile))
+    cli_workspace = tmp_path / "cli"
+    api_workspace = tmp_path / "api"
+    cli_workspace.mkdir()
+    api_workspace.mkdir()
+    monkeypatch.chdir(cli_workspace)
+    cli_result = CliRunner().invoke(main, ["sync", "--project", "demo", "--skip-signals"])
+    monkeypatch.chdir(api_workspace)
+    lines = Lines()
+    outcome = pipeline.sync(["demo"], skip_signals=True, profile_path=str(profile), on_line=lines)
+
+    assert cli_result.exit_code == outcome.exit_code == 0
+    assert cli_result.output == lines.text() + "\n"
+    assert outcome.project_statuses == {"demo": "built"}
+    assert outcome.built_count == 1
+    relative_csv = Path("projects/demo/data/github-commits.csv")
+    assert (cli_workspace / relative_csv).read_text() == (api_workspace / relative_csv).read_text()
+
+
+@pytest.mark.parametrize("bad", ["../evil", "a/b", ".."])
+def test_sync_rejects_unsafe_project_names_before_writing(tmp_path, monkeypatch, bad):
+    repo = _make_repo(tmp_path / "source")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("DEVARCH_WORKSPACE", raising=False)
+    profile = _profile(tmp_path, repo)
+    data = json.loads(profile.read_text())
+    data["projects"][0]["name"] = bad
+    profile.write_text(json.dumps(data))
+    lines = Lines()
+    outcome = pipeline.sync(None, profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 1
+    assert "Invalid project entries" in lines.text()
+    assert sorted(p.name for p in workspace.iterdir()) == []
+    assert not (tmp_path / "evil").exists()
+
+
+def test_sync_with_a_mistyped_project_name_fails_before_writing(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path / "repo")
+    profile = _profile(tmp_path, repo)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    lines = Lines()
+    outcome = pipeline.sync(["demo", "dmeo"], profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 1
+    assert "Unknown project: dmeo" in lines.text()
+    assert "Sync complete." not in lines.text()
+    assert list(workspace.iterdir()) == []

@@ -276,9 +276,10 @@ def mine(
 
     The repository is validated before the project is resolved. Extraction
     failures propagate unchanged. ``on_event`` receives ``("start", None)``,
-    ``("csv-done", commit_count)`` and tells the caller which extraction
-    stage a failure belongs to: before ``csv-done`` it is the commit log,
-    after it the stats log.
+    ``("csv-done", commit_count)`` and ``("stats-done", None)``, which tell
+    the caller which stage a failure belongs to: before ``csv-done`` it is
+    the commit log, before ``stats-done`` the stats log, and after it the
+    evidence binding.
     """
     import hashlib
 
@@ -312,6 +313,7 @@ def mine(
 
     stats_path = str(data_dir / "github-commits-with-stats.txt")
     extract_git_log_with_stats(source, stats_path, verbose=verbose)
+    emit("stats-done")
 
     # Bind the mined bytes to the refs they came from, so audit can detect
     # later edits (0.4.1 evidence binding).
@@ -879,11 +881,32 @@ def cascade(
 # ── sync ───────────────────────────────────────────────────────────────────────
 
 
+def _is_nonempty_string(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _invalid_value_desc(value):
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        return "an empty or whitespace-only string"
+    return type(value).__name__
+
+
 @dataclass
 class SyncOutcome:
     """Exit verdict of a sync run; the transcript went to ``on_line``."""
 
     exit_code: int = 0
+    project_statuses: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def built_count(self) -> int:
+        return sum(status == "built" for status in self.project_statuses.values())
+
+    @property
+    def failed_count(self) -> int:
+        return sum(status == "failed" for status in self.project_statuses.values())
 
 
 def _resolve_profile_path() -> str:
@@ -935,12 +958,76 @@ def sync(
         say(f"Error: Invalid JSON in {profile_path}: {e}", err=True)
         return SyncOutcome(1)
 
+    if not isinstance(profile, dict):
+        say(
+            f"Error: profile.json must contain a JSON object, got {type(profile).__name__}.",
+            err=True,
+        )
+        return SyncOutcome(1)
+
     registered = profile.get("projects", [])
     sync_cfg = profile.get("sync", {})
+
+    if not isinstance(registered, list):
+        say(
+            f"Error: 'projects' in profile.json must be a list, got {type(registered).__name__}.",
+            err=True,
+        )
+        return SyncOutcome(1)
 
     if not registered:
         say("No projects registered in profile.json.")
         return SyncOutcome(0)
+
+    # Validate entries and accept the README-documented "path" alias for the
+    # canonical "repo_path" key before any code reads a project entry, so a
+    # malformed profile fails with an actionable message instead of a KeyError
+    # or TypeError. Names and effective locations must be nonempty strings,
+    # checked before project filtering and before any filesystem writes.
+    problems = []
+    for i, proj in enumerate(registered):
+        if not isinstance(proj, dict):
+            problems.append(f"projects[{i}] must be an object, got {type(proj).__name__}")
+            continue
+        name = proj.get("name")
+        label = name if _is_nonempty_string(name) else f"projects[{i}]"
+        if "name" not in proj:
+            problems.append(f"{label}: missing required key 'name'")
+        elif not _is_nonempty_string(name):
+            problems.append(
+                f"{label}: 'name' must be a nonempty string, got {_invalid_value_desc(name)}"
+            )
+        else:
+            try:
+                validate_project_name(name)
+            except ValueError as e:
+                problems.append(f"{label}: {e}")
+        if "repo_path" in proj:
+            location_key, location = "repo_path", proj["repo_path"]
+        elif "path" in proj:
+            location_key, location = "path", proj["path"]
+        else:
+            location_key, location = None, None
+        if location_key is None:
+            problems.append(f"{label}: missing required key 'repo_path' (or 'path')")
+        elif not _is_nonempty_string(location):
+            problems.append(
+                f"{label}: '{location_key}' must be a nonempty string, "
+                f"got {_invalid_value_desc(location)}"
+            )
+    if problems:
+        say("Invalid project entries in profile.json:", err=True)
+        for problem in problems:
+            say(f"  - {problem}", err=True)
+        say(
+            "Each project needs 'name' and 'repo_path' ('path' is accepted as an alias).",
+            err=True,
+        )
+        return SyncOutcome(1)
+    registered = [
+        {**proj, "repo_path": proj["repo_path"] if "repo_path" in proj else proj["path"]}
+        for proj in registered
+    ]
 
     # Filter to requested projects
     if target_names:
@@ -951,9 +1038,14 @@ def sync(
             say(f"Unknown project: {u} (not in profile.json)", err=True)
     else:
         targets = registered
+        unknown = set()
 
     if not targets:
         say("No matching projects to sync.")
+        return SyncOutcome(1)
+    if target_names and unknown:
+        # A mistyped name must not end in "Sync complete." for the others.
+        say("Error: unknown project name(s); nothing was synced.", err=True)
         return SyncOutcome(1)
 
     say(f"Syncing {len(targets)} project(s)...\n")
@@ -1004,6 +1096,7 @@ def sync(
                 continue
 
     # Phase 1.5: Build DBs
+    project_statuses = {}
     for proj in targets:
         proj_name = proj["name"]
         db_path = os.path.join("projects", proj_name, "data", "archaeology.db")
@@ -1027,7 +1120,9 @@ def sync(
         result = subprocess.run(cmd, capture_output=not verbose, check=True, timeout=300, env=_env)
         if result.returncode == 0 and os.path.exists(db_path):
             say("    DB built")
+            project_statuses[proj_name] = "built"
         else:
+            project_statuses[proj_name] = "failed"
             say(f"    DB build failed (exit {result.returncode})", err=True)
 
     # Phase 2: Detect signals
@@ -1061,7 +1156,7 @@ def sync(
     say("\nAggregating global data...")
     _aggregate_global(targets, profile, verbose=verbose, on_line=on_line)
     say("Sync complete.")
-    return SyncOutcome(0)
+    return SyncOutcome(0, project_statuses)
 
 
 def _aggregate_global(targets, profile, verbose=False, on_line=None):

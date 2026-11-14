@@ -10,8 +10,6 @@ from pathlib import Path
 import click
 
 from .analysis_runner import (
-    VectorOutcome,
-    classify_vector_outcome,
     failed_vectors,
     run_analysis_vectors,
 )
@@ -48,18 +46,6 @@ def _viz_template_path(filename):
     works when the CLI happens to run from the repository source root.
     """
     return Path(__file__).parent / "visualization" / filename
-
-
-def _is_nonempty_string(value):
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _invalid_value_desc(value):
-    if value is None:
-        return "null"
-    if isinstance(value, str):
-        return "an empty or whitespace-only string"
-    return type(value).__name__
 
 
 @click.group()
@@ -146,7 +132,6 @@ def demo(project_name, force, build_db):
 def mine(repo_path, project, verbose):
     """Phase 1: Extract data from a git repository."""
     _check_name(project)
-    from .extractors.git import extract_git_log, extract_git_log_with_stats
 
     project_dir = _project_dir(project)
     data_dir = os.path.join(project_dir, "data")
@@ -315,7 +300,6 @@ def signals(project_name, config_path, min_gap_days, verbose):
     Signals are patterns in the data, NOT era definitions. Eras are
     hand-curated narrative judgments based on these signals.
     """
-    from .classifiers.era_detector import detect_signals
 
     config = {}
     if config_path:
@@ -382,7 +366,7 @@ def extract_sessions(project_name, sessions_dir, verbose):
 @click.option("--verbose", is_flag=True, help="Print vector execution detail")
 def analyze(project_name, vectors, prompts, verbose):
     """Phase 3: Run automated analysis vectors against project data."""
-    from .analysis_runner import AnalysisRunner, run_analysis_vectors
+    from .analysis_runner import AnalysisRunner
 
     available = AnalysisRunner.VECTORS
     unknown = set(vectors) - set(available) if vectors else set()
@@ -660,132 +644,6 @@ def validate(project_name):
     click.echo("PASS: generated history HTML and evidence binding")
 
 
-def _aggregate_global(targets, profile, verbose=False):
-    """Merge per-project data into global/ for cross-project narrative."""
-    import csv
-    import sqlite3
-
-    global_dir = os.path.join("global", "data")
-    os.makedirs(global_dir, exist_ok=True)
-
-    all_commits = []
-    all_eras = []
-    project_summaries = []
-
-    for proj in targets:
-        proj_name = proj["name"]
-        proj_dir = os.path.join("projects", proj_name)
-        db_path = os.path.join(proj_dir, "data", "archaeology.db")
-
-        # Collect commits from CSV (faster than DB)
-        csv_path = os.path.join(proj_dir, "data", "github-commits.csv")
-        if os.path.exists(csv_path):
-            with open(csv_path, newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    # Normalize: drop None keys from malformed rows
-                    clean = {k: v for k, v in row.items() if k is not None}
-                    clean["_project"] = proj_name
-                    all_commits.append(clean)
-
-        # Collect signals from detected-signals.json
-        signals_path = os.path.join(proj_dir, "data", "detected-signals.json")
-        if os.path.exists(signals_path):
-            try:
-                with open(signals_path, encoding="utf-8") as f:
-                    proj_signals = json.load(f)
-                proj_signals["_project"] = proj_name
-                all_eras.append(proj_signals)
-            except json.JSONDecodeError as e:
-                click.echo(f"Warning: Invalid JSON in {signals_path}: {e}", err=True)
-                continue
-
-        # Build per-project summary from DB
-        if os.path.exists(db_path):
-            conn = sqlite3.connect(db_path, timeout=30)
-            conn.row_factory = sqlite3.Row
-            try:
-                row = conn.execute(
-                    "SELECT COUNT(*) as cnt, MIN(date) as first, MAX(date) as last FROM commits"
-                ).fetchone()
-                project_summaries.append(
-                    {
-                        "name": proj_name,
-                        "total_commits": row["cnt"],
-                        "first_commit": row["first"],
-                        "last_commit": row["last"],
-                    }
-                )
-            except sqlite3.OperationalError:
-                project_summaries.append({"name": proj_name, "total_commits": 0})
-            finally:
-                conn.close()
-
-    # Write global commits CSV
-    if all_commits:
-        # Collect union of all field names for consistent schema
-        all_fields = set()
-        for row in all_commits:
-            all_fields.update(row.keys())
-        fields = sorted(all_fields)
-        commit_path = os.path.join(global_dir, "global-commits.csv")
-        with open(commit_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(all_commits)
-        click.echo(
-            f"  {len(all_commits)} commits across {len(targets)} projects → global-commits.csv"
-        )
-
-    # Write global signals JSON
-    if all_eras:
-        signals_path = os.path.join(global_dir, "global-signals.json")
-        with open(signals_path, "w", encoding="utf-8") as f:
-            json.dump(all_eras, f, indent=2)
-        click.echo(
-            f"  {len(all_eras)} signal reports across {len(targets)} projects → global-signals.json"
-        )
-
-    # Write project summaries
-    summaries_path = os.path.join(global_dir, "project-summaries.json")
-    with open(summaries_path, "w", encoding="utf-8") as f:
-        json.dump(project_summaries, f, indent=2)
-    click.echo(f"  {len(project_summaries)} project summaries → project-summaries.json")
-
-    # Build global DB
-    global_db = os.path.join(global_dir, "global.db")
-    Path(global_db).unlink(missing_ok=True)
-
-    if all_commits:
-        # Use sqlite-utils CLI if available, otherwise sqlite3
-        tmp_csv = os.path.join(global_dir, "global-commits.csv")
-        try:
-            subprocess.run(
-                ["sqlite-utils", "insert", global_db, "commits", tmp_csv, "--csv"],
-                capture_output=True,
-                check=True,
-                timeout=300,
-            )
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            conn = sqlite3.connect(global_db, timeout=30)
-            try:
-                with open(tmp_csv, newline="", encoding="utf-8") as f:
-                    reader = csv.DictReader(f)
-                    cols = reader.fieldnames
-                    conn.execute(f"CREATE TABLE commits ({', '.join(c + ' TEXT' for c in cols)})")
-                    for row in reader:
-                        placeholders = ", ".join("?" for _ in cols)
-                        conn.execute(
-                            f"INSERT INTO commits VALUES ({placeholders})",
-                            [row[c] for c in cols],
-                        )
-                conn.commit()
-            finally:
-                conn.close()
-
-        click.echo("  Global DB → global.db")
-
-
 @main.command()
 @click.option(
     "--project",
@@ -799,208 +657,17 @@ def _aggregate_global(targets, profile, verbose=False):
 @click.option("--verbose", "-v", is_flag=True)
 def sync(projects, skip_mine, skip_signals, verbose):
     """Sync registered projects and aggregate into global narrative."""
-    profile_path = os.path.join(os.path.dirname(__file__), "..", "config", "profile.json")
-    if not os.path.exists(profile_path):
-        profile_path = "config/profile.json"
-    if not os.path.exists(profile_path):
-        click.echo(
-            "No profile.json found. Create one at config/profile.json with your project list.",
-            err=True,
-        )
-        sys.exit(1)
+    from .pipeline import sync as sync_projects
 
-    try:
-        with open(profile_path, encoding="utf-8") as f:
-            profile = json.load(f)
-    except json.JSONDecodeError as e:
-        click.echo(f"Error: Invalid JSON in {profile_path}: {e}", err=True)
-        sys.exit(1)
-
-    if not isinstance(profile, dict):
-        click.echo(
-            f"Error: profile.json must contain a JSON object, got {type(profile).__name__}.",
-            err=True,
-        )
-        sys.exit(1)
-
-    registered = profile.get("projects", [])
-    sync_cfg = profile.get("sync", {})
-
-    if not isinstance(registered, list):
-        click.echo(
-            f"Error: 'projects' in profile.json must be a list, got {type(registered).__name__}.",
-            err=True,
-        )
-        sys.exit(1)
-
-    if not registered:
-        click.echo("No projects registered in profile.json.")
-        sys.exit(0)
-
-    # Validate entries and accept the README-documented "path" alias for the
-    # canonical "repo_path" key before any code reads a project entry, so a
-    # malformed profile fails with an actionable message instead of a KeyError
-    # or TypeError. Names and effective locations must be nonempty strings,
-    # checked before project filtering and before any filesystem writes.
-    problems = []
-    for i, proj in enumerate(registered):
-        if not isinstance(proj, dict):
-            problems.append(f"projects[{i}] must be an object, got {type(proj).__name__}")
-            continue
-        name = proj.get("name")
-        label = name if _is_nonempty_string(name) else f"projects[{i}]"
-        if "name" not in proj:
-            problems.append(f"{label}: missing required key 'name'")
-        elif not _is_nonempty_string(name):
-            problems.append(
-                f"{label}: 'name' must be a nonempty string, got {_invalid_value_desc(name)}"
-            )
-        if "repo_path" in proj:
-            location_key, location = "repo_path", proj["repo_path"]
-        elif "path" in proj:
-            location_key, location = "path", proj["path"]
-        else:
-            location_key, location = None, None
-        if location_key is None:
-            problems.append(f"{label}: missing required key 'repo_path' (or 'path')")
-        elif not _is_nonempty_string(location):
-            problems.append(
-                f"{label}: '{location_key}' must be a nonempty string, "
-                f"got {_invalid_value_desc(location)}"
-            )
-    if problems:
-        click.echo("Invalid project entries in profile.json:", err=True)
-        for problem in problems:
-            click.echo(f"  - {problem}", err=True)
-        click.echo(
-            "Each project needs 'name' and 'repo_path' ('path' is accepted as an alias).",
-            err=True,
-        )
-        sys.exit(1)
-    registered = [
-        {**proj, "repo_path": proj["repo_path"] if "repo_path" in proj else proj["path"]}
-        for proj in registered
-    ]
-
-    # Filter to requested projects
-    if projects:
-        names = set(projects)
-        targets = [p for p in registered if p["name"] in names]
-        unknown = names - {p["name"] for p in registered}
-        for u in unknown:
-            click.echo(f"Unknown project: {u} (not in profile.json)", err=True)
-    else:
-        targets = registered
-
-    if not targets:
-        click.echo("No matching projects to sync.")
-        sys.exit(1)
-
-    click.echo(f"Syncing {len(targets)} project(s)...\n")
-
-    # Ensure all project dirs exist
-    for proj in targets:
-        proj_dir = os.path.join("projects", proj["name"])
-        if not os.path.isdir(proj_dir):
-            click.echo(f"  Initializing {proj['name']}...")
-            os.makedirs(os.path.join(proj_dir, "data"), exist_ok=True)
-            os.makedirs(os.path.join(proj_dir, "deliverables"), exist_ok=True)
-            config = {
-                "name": proj["name"],
-                "repo_path": os.path.expanduser(proj["repo_path"]),
-                "repo_url": proj.get("repo_url", ""),
-                "developer": profile.get("developer", {}),
-            }
-            with open(os.path.join(proj_dir, "project.json"), "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2)
-
-    # Phase 1: Mine each project
-    if not skip_mine:
-        for proj in targets:
-            repo_path = os.path.expanduser(proj["repo_path"])
-            if not os.path.isdir(repo_path):
-                click.echo(f"  SKIP {proj['name']}: repo not found at {repo_path}", err=True)
-                continue
-            if not os.path.isdir(os.path.join(repo_path, ".git")):
-                click.echo(f"  SKIP {proj['name']}: not a git repo", err=True)
-                continue
-
-            click.echo(f"  Mining {proj['name']}...")
-
-            data_dir = os.path.join("projects", proj["name"], "data")
-            csv_path = os.path.join(data_dir, "github-commits.csv")
-            try:
-                count = extract_git_log(repo_path, csv_path, verbose=verbose)
-                click.echo(f"    {count} commits extracted")
-            except (RuntimeError, Exception) as e:
-                click.echo(f"    Error: Git extraction failed: {e}", err=True)
-                continue
-
-            stats_path = os.path.join(data_dir, "github-commits-with-stats.txt")
-            try:
-                extract_git_log_with_stats(repo_path, stats_path, verbose=verbose)
-            except (RuntimeError, Exception) as e:
-                click.echo(f"    Error: Git stats extraction failed: {e}", err=True)
-                continue
-
-    # Phase 1.5: Build DBs
-    for proj in targets:
-        proj_name = proj["name"]
-        db_path = os.path.join("projects", proj_name, "data", "archaeology.db")
-        click.echo(f"  Building DB for {proj_name}...")
-
-        cmd = [
-            sys.executable,
-            "-m",
-            "archaeology.db.builder",
-            "--project-root",
-            os.path.join("projects", proj_name),
-        ]
-        if verbose:
-            cmd.append("--verbose")
-
-        _env = os.environ.copy()
-        _pkg_root = str(Path(__file__).parent.parent)
-        _env["PYTHONPATH"] = _pkg_root + (
-            (os.pathsep + _env["PYTHONPATH"]) if _env.get("PYTHONPATH") else ""
-        )
-        result = subprocess.run(cmd, capture_output=not verbose, check=True, timeout=300, env=_env)
-        if result.returncode == 0 and os.path.exists(db_path):
-            click.echo("    DB built")
-        else:
-            click.echo(f"    DB build failed (exit {result.returncode})", err=True)
-
-    # Phase 2: Detect signals
-    should_detect_signals = sync_cfg.get("run_signals", True) and not skip_signals
-    if should_detect_signals:
-        min_gap = sync_cfg.get("default_min_gap_days", 3)
-        for proj in targets:
-            click.echo(f"  Detecting signals for {proj['name']}...")
-            result = detect_signals(proj["name"], config={"min_gap_days": min_gap})
-            sig_count = len(result.get("signals", []))
-            cluster_count = len(result.get("cluster_summary", []))
-            click.echo(f"    {sig_count} signals, {cluster_count} clusters")
-
-    # Phase 3: Run automated analysis vectors
-    run_auto_analysis = sync_cfg.get("run_analysis", True)
-    if run_auto_analysis:
-        click.echo("\nRunning automated analysis vectors...")
-        for proj in targets:
-            click.echo(f"  Analyzing {proj['name']}...")
-            try:
-                results = run_analysis_vectors(proj["name"], verbose=verbose)
-                for vector, path in results.items():
-                    if classify_vector_outcome(path) is VectorOutcome.WRITTEN:
-                        click.echo(f"    ✓ {vector}")
-                    else:
-                        click.echo(f"    ✗ {vector}: {path}")
-            except Exception as e:
-                click.echo(f"    Analysis failed: {e}", err=True)
-
-    # Phase 4: Aggregate into global/
-    click.echo("\nAggregating global data...")
-    _aggregate_global(targets, profile, verbose)
-    click.echo("Sync complete.")
+    outcome = sync_projects(
+        projects,
+        skip_mine=skip_mine,
+        skip_signals=skip_signals,
+        verbose=verbose,
+        on_line=lambda text, err=False: click.echo(text, err=err),
+    )
+    if outcome.exit_code:
+        raise click.exceptions.Exit(outcome.exit_code)
 
 
 @main.command("global-viz")
