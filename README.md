@@ -142,7 +142,7 @@ devarch audit my-project --fail-on MEDIUM
 
 ### Signal Detection
 - `devarch signals <project> [--config] [--min-gap-days]` -- Run signal detection heuristics
-- `devarch extract-sessions <project> --sessions-dir <path>` -- Extract coding sessions recursively. By default it selects the configured `repo_path`; if unknown, provide `--project-slug=<slug>`. Use `--all-projects` to scan all projects. Use `--project-slug=<slug>` to select a Claude Code project and `--include-subagents` to include subagent sessions. The command fails if it finds no session files.
+- `devarch extract-sessions <project> --sessions-dir <path>` -- Extract coding sessions recursively. By default it selects the configured `repo_path`; if unknown, provide `--project-slug=<slug>`. Use `--all-projects` to scan all projects, or `--include-subagents` to include subagent sessions. The command fails if it finds no session files. Session headers show human and agent messages and filtered harness entries; SDK and subagent prompts are not counted as human. The `sdk` and `sdk-cli` entrypoints are agent-driven; interactive, missing, and unknown entrypoints are treated as human unless the file is under `subagents`.
 
 ### Analysis
 - `devarch analyze <project> [--vector] [--prompts]` -- Run analysis vectors

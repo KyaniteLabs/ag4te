@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.1] - Unreleased readiness candidate
 
 - Scope default session extraction to the configured repository, with `--all-projects` as an opt-in; fix leading-dash option values and duplicate error prefixes.
+- Filter harness blocks in linear time, including a truncated block that opens a message, and identify SDK and subagent messages in extracted narratives (#76). Unknown entrypoints stay human, `--include-subagents` keeps subagent sidechain content, and malformed entries are counted separately. An unclosed tag no longer shields later harness blocks, prose that starts with an unrelated tag such as `<command-line>` is kept, and blank lines are not counted as malformed.
 
 - Discover nested Claude Code sessions, with optional project and subagent filters (#75). Default discovery follows Claude Code's folder naming, including long hashed paths.
 

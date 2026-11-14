@@ -352,57 +352,152 @@ def is_interesting(text, keywords):
 # ---------------------------------------------------------------------------
 
 
-def parse_session(filepath):
+_INJECTED_TAG = re.compile(
+    r"<(?P<close>/)?(?P<name>system-reminder|task-notification|local-command-[\w-]+|bash-(?:stdout|stderr|input)|command-(?:name|message|args))(?:\s[^<>]*)?>",
+    re.IGNORECASE,
+)
+_HARNESS_PREAMBLES = (
+    "this session is being continued",
+    "stop hook feedback",
+    "caveat: the messages below were generated",
+)
+
+
+def _strip_injected_blocks(content):
+    """Remove each closed injected block; an unclosed tag leaves later blocks strippable."""
+    stack = []
+    ranges = []
+    for match in _INJECTED_TAG.finditer(content):
+        name = match.group("name").lower()
+        if not match.group("close"):
+            stack.append((name, match.start()))
+            continue
+        for depth in range(len(stack) - 1, -1, -1):
+            if stack[depth][0] == name:
+                ranges.append((stack[depth][1], match.end()))
+                del stack[depth:]  # opens above the match never closed
+                break
+    parts = []
+    end = 0
+    for start, stop in sorted(ranges):
+        if start >= end:  # a nested range lies inside the one already cut
+            parts.append(content[end:start])
+        end = max(end, stop)
+    parts.append(content[end:])
+    return "".join(parts)
+
+
+def parse_session(filepath, root=None):
     session_id = os.path.basename(filepath).replace(".jsonl", "")
-    messages = []
+    human_msgs = []
+    agent_msgs = []
+    assistant_msgs = []
+    counts = {"human": 0, "agent": 0, "harness": 0, "malformed": 0, "other": 0}
+    # A "subagents" folder below the scan root, or the file's own folder, marks
+    # subagent files; the root's other ancestors (e.g. ~/subagents/) do not.
+    parent = os.path.basename(os.path.dirname(os.path.abspath(filepath)))
+    folders = [parent]
+    if root:
+        folders += os.path.normpath(os.path.relpath(filepath, root)).split(os.sep)[:-1]
+    agent_driven = "subagents" in folders
+    first_user_seen = False
+    first_entrypoint = None
     ai_title = None
     session_timestamp = None
 
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
-                line = line.strip()
-                if not line:
+                if not line.strip():  # blank lines (e.g. a trailing newline) carry no record
                     continue
                 try:
                     d = json.loads(line)
                 except json.JSONDecodeError:
+                    counts["malformed"] += 1
                     continue
-
+                if not isinstance(d, dict):
+                    counts["malformed"] += 1
+                    continue
                 msg_type = d.get("type", "")
-
                 if session_timestamp is None and "timestamp" in d:
                     session_timestamp = d.get("timestamp")
-
                 if msg_type == "ai-title":
                     ai_title = d.get("aiTitle", d.get("title", d.get("message", "")))
+                    counts["other"] += 1
+                    continue
+                if msg_type not in ("user", "assistant"):
+                    counts["other"] += 1
+                    continue
+                if msg_type == "user" and first_entrypoint is None:
+                    first_entrypoint = d.get("entrypoint")
+                if (
+                    any(d.get(key) for key in ("isMeta", "isCompactSummary"))
+                    or (d.get("isSidechain") and not agent_driven)
+                    or "toolUseResult" in d
+                ):
+                    counts["harness"] += 1
+                    continue
 
-                elif msg_type == "user":
-                    msg = d.get("message", {})
-                    content = extract_human_text(msg.get("content", ""))
-                    if content and content.strip():
-                        messages.append(
-                            {
-                                "type": "user",
-                                "role": "user",
-                                "content": content,
-                                "timestamp": d.get("timestamp", ""),
-                            }
-                        )
+                msg = d.get("message", {})
+                if not isinstance(msg, dict):
+                    counts["malformed"] += 1
+                    continue
+                raw = msg.get("content", "")
+                content = (
+                    extract_human_text(raw) if msg_type == "user" else extract_assistant_text(raw)
+                )
+                cleaned = _strip_injected_blocks(content).strip()
+                filtered = cleaned != content.strip() or (
+                    isinstance(raw, list)
+                    and any(
+                        isinstance(block, dict) and block.get("type") == "tool_result"
+                        for block in raw
+                    )
+                )
+                opening = _INJECTED_TAG.match(cleaned)
+                if opening and not opening.group("close"):
+                    # A message that opens with an injected tag that never closes is a
+                    # truncated harness block, not prose that merely mentions the tag.
+                    filtered = True
+                    cleaned = ""
+                if cleaned.lower().startswith(_HARNESS_PREAMBLES):
+                    filtered = True
+                    cleaned = ""
+                if (
+                    msg_type == "user"
+                    and cleaned
+                    and (
+                        cleaned.startswith(("<ide_opened_file>", "<ide_closed_file>"))
+                        or is_tool_result_noise(cleaned)
+                    )
+                ):
+                    filtered = True
+                    cleaned = ""
+                if not cleaned:
+                    counts["harness" if filtered or raw else "other"] += 1
+                    continue
 
-                elif msg_type == "assistant":
-                    msg = d.get("message", {})
-                    content = extract_assistant_text(msg.get("content", ""))
-                    if content and content.strip():
-                        messages.append(
-                            {
-                                "type": "assistant",
-                                "role": "assistant",
-                                "content": content,
-                                "timestamp": d.get("timestamp", ""),
-                            }
-                        )
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
+                if msg_type == "user" and not first_user_seen:
+                    first_user_seen = True
+                    entrypoint = d.get("entrypoint")
+                    if str(entrypoint).lower() in {"sdk", "sdk-cli"}:
+                        agent_driven = True
+                provenance = "agent" if msg_type == "assistant" or agent_driven else "human"
+                message = {
+                    "type": msg_type,
+                    "role": msg_type,
+                    "content": cleaned,
+                    "timestamp": d.get("timestamp", ""),
+                    "provenance": provenance,
+                }
+                counts[provenance] += 1
+                if msg_type == "assistant":
+                    assistant_msgs.append(message)
+                elif provenance == "agent":
+                    agent_msgs.append(message)
+                else:
+                    human_msgs.append(message)
+    except (KeyError, TypeError, AttributeError) as e:
         return {
             "session_id": session_id,
             "error": str(e),
@@ -410,29 +505,14 @@ def parse_session(filepath):
             "timestamp": session_timestamp,
         }
 
-    # Filter human messages to only genuine human dialogue
-    genuine_human = []
-    for m in messages:
-        if m["role"] != "user":
-            continue
-        text = m["content"].strip()
-        # Skip IDE notifications
-        if text.startswith("<ide_opened_file>") or text.startswith("<ide_closed_file>"):
-            continue
-        # Skip pure tool result noise
-        if is_tool_result_noise(text):
-            continue
-        genuine_human.append(m)
+    if not first_user_seen and str(first_entrypoint).lower() in {"sdk", "sdk-cli"}:
+        agent_driven = True
 
-    assistant_msgs = [m for m in messages if m["role"] == "assistant"]
-
-    # Generate a fallback title from first substantive human message
     fallback_title = None
-    for m in genuine_human:
-        text = m["content"].strip()
+    for message in human_msgs:
+        text = message["content"].strip()
         if len(text) > 10 and not text.startswith("[Request interrupted"):
-            first_line = text.split("\n")[0].strip()
-            fallback_title = first_line[:80]
+            fallback_title = text.split("\n")[0].strip()[:80]
             break
 
     return {
@@ -440,9 +520,12 @@ def parse_session(filepath):
         "ai_title": ai_title,
         "fallback_title": fallback_title,
         "timestamp": session_timestamp,
-        "human_messages": genuine_human,
+        "human_messages": human_msgs,
+        "agent_messages": agent_msgs,
         "assistant_messages": assistant_msgs,
-        "total_human": len(genuine_human),
+        "agent_driven": agent_driven,
+        "provenance_counts": counts,
+        "total_human": len(human_msgs),
         "total_assistant": len(assistant_msgs),
     }
 
@@ -467,12 +550,22 @@ def extract_narrative(
     timestamp = session_data.get("timestamp", "")
     human_msgs = session_data.get("human_messages", [])
     assistant_msgs = session_data.get("assistant_messages", [])
+    agent_msgs = session_data.get("agent_messages", [])
+    counts = session_data.get("provenance_counts", {})
+    agent_driven = session_data.get("agent_driven", False)
 
     if session_data.get("error"):
         return f"## Session: Error\n**ID**: `{sid}`\n**Error**: {session_data['error']}\n\n---\n\n"
 
-    if not human_msgs and not assistant_msgs:
-        return f"## Session: Empty\n**ID**: `{sid}`\n*No messages found.*\n\n---\n\n"
+    if not human_msgs and not assistant_msgs and not agent_msgs:
+        session_type = "**Session type**: agent-driven\n" if agent_driven else ""
+        return (
+            f"## Session: Empty\n**ID**: `{sid}`\n"
+            f"**Provenance**: {counts.get('human', 0)} human, {counts.get('agent', 0)} agent, "
+            f"{counts.get('harness', 0)} harness entries filtered, "
+            f"{counts.get('malformed', 0)} malformed, {counts.get('other', 0)} other\n"
+            f"{session_type}*No messages found.*\n\n---\n\n"
+        )
 
     ts_display = ""
     if timestamp:
@@ -485,7 +578,21 @@ def extract_narrative(
     md = f"## Session: {redact_text(title, redact_patterns)}\n"
     md += f"**ID**: `{sid}`  \n"
     md += f"**Date**: {ts_display}  \n"
-    md += f"**Messages**: {len(human_msgs)} human, {len(assistant_msgs)} assistant  \n\n"
+    md += f"**Messages**: {len(human_msgs)} human, {len(assistant_msgs)} assistant  \n"
+    md += (
+        f"**Provenance**: {counts.get('human', len(human_msgs))} human, "
+        f"{counts.get('agent', len(agent_msgs) + len(assistant_msgs))} agent, "
+        f"{counts.get('harness', 0)} harness entries filtered, "
+        f"{counts.get('malformed', 0)} malformed, {counts.get('other', 0)} other  \n"
+    )
+    if agent_driven:
+        md += "**Session type**: agent-driven  \n"
+    md += "\n"
+    if agent_msgs:
+        md += "### Agent Prompts\n\n"
+        for message in agent_msgs:
+            text = redact_text(truncate(message["content"], 500), redact_patterns)
+            md += f"**[Agent]** {text}\n\n"
 
     # --- HUMAN INTENT ---
     md += "### Human Intent\n\n"
@@ -778,7 +885,7 @@ def main(argv=None):
     for f in files:
         session_id = os.path.basename(f).replace(".jsonl", "")
         print(f"  Parsing {session_id}...")
-        data = parse_session(f)
+        data = parse_session(f, sessions_dir)
         sessions.append(data)
 
     # Sort by timestamp
@@ -792,7 +899,7 @@ def main(argv=None):
     output_parts.append(f"Extracted from {len(files)} Claude Code session logs.\n")
     output_parts.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
     output_parts.append("Note: Tool-result noise (file contents, diffs, code dumps) filtered out. ")
-    output_parts.append("Only genuine human dialogue and agent narrative text included.\n\n")
+    output_parts.append("Human dialogue, agent prompts and assistant narrative are included.\n\n")
     output_parts.append("---\n\n")
 
     for data in sessions:
