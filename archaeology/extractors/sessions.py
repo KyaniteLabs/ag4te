@@ -7,7 +7,6 @@ V3: Project-agnostic -- accepts --sessions-dir, --output, --config, --project ar
 """
 
 import argparse
-import glob
 import json
 import os
 import re
@@ -643,8 +642,17 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--sessions-dir",
-        default=os.path.expanduser("~/.claude/projects/"),
+        default=None,
         help="Directory containing .jsonl session files (default: ~/.claude/projects/)",
+    )
+    parser.add_argument(
+        "--project-slug",
+        default=None,
+        help="Only scan this project folder inside the sessions directory",
+    )
+    parser.add_argument("--all-projects", action="store_true", help="Scan all projects")
+    parser.add_argument(
+        "--include-subagents", action="store_true", help="Include sessions in subagents directories"
     )
     parser.add_argument(
         "--output",
@@ -662,12 +670,97 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+_SLUG_MAX = 200
+
+
+def _utf16_units(text):
+    data = text.encode("utf-16-le", "surrogatepass")
+    return [int.from_bytes(data[i : i + 2], "little") for i in range(0, len(data), 2)]
+
+
+def _base36(n):
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    while True:
+        n, r = divmod(n, 36)
+        out = digits[r] + out
+        if not n:
+            return out
+
+
+def claude_project_slug(path):
+    """Claude Code's session folder name for a project path.
+
+    Claude Code replaces every character outside [A-Za-z0-9] with "-", per
+    UTF-16 code unit, so a character beyond the BMP becomes "--". Names
+    longer than 200 characters are cut there and given a suffix: the base-36
+    absolute value of a 32-bit Java-style string hash of the original path.
+    """
+    slug = "".join(
+        ch if ch.isascii() and ch.isalnum() else ("--" if ord(ch) > 0xFFFF else "-") for ch in path
+    )
+    if len(slug) <= _SLUG_MAX:
+        return slug
+    h = 0
+    for unit in _utf16_units(path):
+        h = (h * 31 + unit) & 0xFFFFFFFF
+    if h >= 0x80000000:
+        h -= 0x100000000
+    return f"{slug[:_SLUG_MAX]}-{_base36(abs(h))}"
+
+
 def main(argv=None):
     args = parse_args(argv)
 
-    sessions_dir = os.path.expanduser(args.sessions_dir)
+    if args.all_projects and args.project_slug:
+        print("Error: --all-projects cannot be combined with --project-slug", file=sys.stderr)
+        sys.exit(1)
+    if not args.sessions_dir and not args.project_slug and not args.all_projects:
+        config_path = os.path.join("projects", args.project or "", "project.json")
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                repo_path = json.load(f).get("repo_path")
+        except (OSError, json.JSONDecodeError):
+            repo_path = None
+        if not isinstance(repo_path, str) or not repo_path.strip():
+            print(
+                "Error: no repo_path known; specify --project-slug or --all-projects",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        args.project_slug = claude_project_slug(os.path.abspath(os.path.expanduser(repo_path)))
+    sessions_dir = os.path.expanduser(args.sessions_dir or "~/.claude/projects/")
     if not os.path.isdir(sessions_dir):
         print(f"Error: sessions directory not found: {sessions_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.project_slug:
+        if (
+            args.project_slug in (".", "..")
+            or os.path.basename(args.project_slug) != args.project_slug
+        ):
+            print("Error: --project-slug must name one project folder", file=sys.stderr)
+            sys.exit(1)
+        project_dir = os.path.join(sessions_dir, args.project_slug)
+        if os.path.commonpath(
+            [os.path.realpath(sessions_dir), os.path.realpath(project_dir)]
+        ) != os.path.realpath(sessions_dir):
+            print("Error: --project-slug must stay inside the sessions directory", file=sys.stderr)
+            sys.exit(1)
+        sessions_dir = project_dir
+        if not os.path.isdir(sessions_dir):
+            print(f"Error: project session directory not found: {sessions_dir}", file=sys.stderr)
+            sys.exit(1)
+
+    files = []
+    for root, dirs, names in os.walk(sessions_dir):
+        if not args.include_subagents:
+            dirs[:] = [name for name in dirs if name != "subagents"]
+        files.extend(os.path.join(root, name) for name in names if name.endswith(".jsonl"))
+    files.sort()
+    print(f"Found {len(files)} session files in {sessions_dir}")
+    if not files:
+        print(f"Error: no session files found in {sessions_dir}", file=sys.stderr)
         sys.exit(1)
 
     # Resolve output path
@@ -676,13 +769,10 @@ def main(argv=None):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         output_file = os.path.join(repo_root, "data", "raw-sessions.md")
 
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
 
     # Resolve config (keywords + redaction patterns)
     emotional_kw, philosophical_kw, redact_pat = resolve_config(args)
-
-    files = sorted(glob.glob(os.path.join(sessions_dir, "*.jsonl")))
-    print(f"Found {len(files)} session files in {sessions_dir}")
 
     sessions = []
     for f in files:

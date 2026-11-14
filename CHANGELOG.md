@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.1] - Unreleased readiness candidate
 
+- Scope default session extraction to the configured repository, with `--all-projects` as an opt-in; fix leading-dash option values and duplicate error prefixes.
+
+- Discover nested Claude Code sessions, with optional project and subagent filters (#75). Default discovery follows Claude Code's folder naming, including long hashed paths.
+
 - Apply documented sync settings and warn when profiles use deprecated or unknown keys (#73). Mistyped setting values fail before anything is written.
 
 - Continue syncing healthy projects after a failure, report the cause and return a failing exit status (#72). A repository with no commits yet is skipped, not failed; a missing repository still fails the run. When any project fails, sync says which projects `global/` reflects. Sync and cascade mine through the same checks as `mine`: shallow clones are refused and the coverage manifest is rebound to the newly mined bytes.

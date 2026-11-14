@@ -25,6 +25,8 @@ def _run_child(cmd, **kwargs):
         if isinstance(detail, bytes):
             detail = detail.decode("utf-8", errors="replace")
         detail = str(detail).strip()
+        if detail.startswith("Error: "):
+            detail = detail[7:]
         if "Traceback (most recent call last):" in detail:
             detail = detail.splitlines()[-1]
         raise click.ClickException(detail) from exc
@@ -356,18 +358,29 @@ def signals(project_name, config_path, min_gap_days, verbose):
 @main.command()
 @click.argument("project_name")
 @click.option("--sessions-dir", help="Directory containing .jsonl session files")
+@click.option("--project-slug", help="Only scan this Claude Code project folder")
+@click.option("--include-subagents", is_flag=True, help="Include subagent sessions")
+@click.option("--all-projects", is_flag=True, help="Scan all Claude Code projects")
 @click.option("--verbose", "-v", is_flag=True)
-def extract_sessions(project_name, sessions_dir, verbose):
+def extract_sessions(
+    project_name, sessions_dir, project_slug, include_subagents, all_projects, verbose
+):
     """Extract Claude Code session data."""
     project_dir = _project_dir(project_name)
     output_path = os.path.join(project_dir, "data", "raw-sessions.md")
 
-    cmd = [sys.executable, "-m", "archaeology.extractors.sessions", "--output", output_path]
+    cmd = [sys.executable, "-m", "archaeology.extractors.sessions", f"--output={output_path}"]
     if sessions_dir:
-        cmd.extend(["--sessions-dir", sessions_dir])
-    cmd.extend(["--project", project_name])
+        cmd.append(f"--sessions-dir={sessions_dir}")
+    if project_slug:
+        cmd.append(f"--project-slug={project_slug}")
+    if include_subagents:
+        cmd.append("--include-subagents")
+    if all_projects:
+        cmd.append("--all-projects")
+    cmd.append(f"--project={project_name}")
 
-    result = _run_child(cmd, timeout=300)
+    result = _run_child(cmd)
     if result.returncode == 0:
         click.echo(f"Sessions extracted to {output_path}")
     else:

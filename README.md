@@ -142,7 +142,7 @@ devarch audit my-project --fail-on MEDIUM
 
 ### Signal Detection
 - `devarch signals <project> [--config] [--min-gap-days]` -- Run signal detection heuristics
-- `devarch extract-sessions <project> --sessions-dir <path>` -- Extract coding sessions
+- `devarch extract-sessions <project> --sessions-dir <path>` -- Extract coding sessions recursively. By default it selects the configured `repo_path`; if unknown, provide `--project-slug=<slug>`. Use `--all-projects` to scan all projects. Use `--project-slug=<slug>` to select a Claude Code project and `--include-subagents` to include subagent sessions. The command fails if it finds no session files.
 
 ### Analysis
 - `devarch analyze <project> [--vector] [--prompts]` -- Run analysis vectors
