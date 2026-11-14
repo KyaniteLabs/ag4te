@@ -835,6 +835,152 @@ def test_sync_mining_error_of_any_type_skips_only_that_project(tmp_path, monkeyp
     assert outcome.exit_code == 1
 
 
+def test_sync_legacy_settings_apply_with_warning(tmp_path, monkeypatch):
+    import sqlite3
+
+    from archaeology.classifiers import era_detector
+
+    monkeypatch.chdir(tmp_path)
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "projects": [{"name": "demo", "repo_path": str(tmp_path)}],
+                "sync_settings": {
+                    "auto_mine": False,
+                    "auto_signals": True,
+                    "min_gap_days": 14,
+                    "unknown": True,
+                },
+                "sync": {"run_analysis": False, "typo": True},
+            }
+        )
+    )
+    seen = []
+
+    def detect(name, config):
+        seen.append(config["min_gap_days"])
+        return {"signals": [], "cluster_summary": []}
+
+    def build(cmd, **kwargs):
+        project = Path(cmd[cmd.index("--project-root") + 1])
+        with sqlite3.connect(project / "data" / "archaeology.db") as conn:
+            conn.execute("CREATE TABLE commits (date TEXT)")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(era_detector, "detect_signals", detect)
+    monkeypatch.setattr(pipeline.subprocess, "run", build)
+    lines = Lines()
+    outcome = pipeline.sync(None, profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 0
+    assert seen == [14]
+    assert "deprecated" in lines.text().lower()
+    assert "unknown" in lines.text() and "typo" in lines.text()
+    assert "Mining demo" not in lines.text()
+
+
+def test_sync_canonical_settings_override_legacy(tmp_path, monkeypatch):
+    import sqlite3
+
+    from archaeology.classifiers import era_detector
+
+    monkeypatch.chdir(tmp_path)
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "projects": [{"name": "demo", "repo_path": str(tmp_path)}],
+                "sync_settings": {"auto_mine": False, "min_gap_days": 14},
+                "sync": {
+                    "run_mine": False,
+                    "run_signals": True,
+                    "run_analysis": False,
+                    "default_min_gap_days": 6,
+                },
+            }
+        )
+    )
+    seen = []
+
+    def detect(name, config):
+        seen.append(config["min_gap_days"])
+        return {"signals": [], "cluster_summary": []}
+
+    def build(cmd, **kwargs):
+        project = Path(cmd[cmd.index("--project-root") + 1])
+        with sqlite3.connect(project / "data" / "archaeology.db") as conn:
+            conn.execute("CREATE TABLE commits (date TEXT)")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(era_detector, "detect_signals", detect)
+    monkeypatch.setattr(pipeline.subprocess, "run", build)
+    outcome = pipeline.sync(None, profile_path=str(profile))
+    assert outcome.exit_code == 0
+    assert seen == [6]
+
+
+@pytest.mark.parametrize(("gap_days", "expected"), [(3, True), (14, False)])
+def test_sync_legacy_gap_changes_detected_signals(tmp_path, monkeypatch, gap_days, expected):
+    import sqlite3
+
+    monkeypatch.chdir(tmp_path)
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "projects": [{"name": "demo", "repo_path": str(tmp_path)}],
+                "sync_settings": {"auto_mine": False, "min_gap_days": gap_days},
+                "sync": {"run_analysis": False},
+            }
+        )
+    )
+
+    def build(cmd, **kwargs):
+        project = Path(cmd[cmd.index("--project-root") + 1])
+        with sqlite3.connect(project / "data" / "archaeology.db") as conn:
+            conn.execute("CREATE TABLE commits (date TEXT, author TEXT, message TEXT)")
+            conn.executemany(
+                "INSERT INTO commits VALUES (?, ?, ?)",
+                [
+                    ("2026-01-01", "Dev", "first"),
+                    ("2026-01-11", "Dev", "second"),
+                ],
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(pipeline.subprocess, "run", build)
+    lines = Lines()
+    outcome = pipeline.sync(None, profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 0
+    report = json.loads((tmp_path / "projects/demo/data/detected-signals.json").read_text())
+    assert any(signal["type"] == "gap" for signal in report["signals"]) is expected
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"sync": {"run_signals": "false"}},
+        {"sync": {"default_min_gap_days": "14"}},
+        {"sync": {"default_min_gap_days": True}},
+        {"sync": {"default_min_gap_days": -1}},
+        {"sync_settings": {"auto_mine": 0}},
+    ],
+)
+def test_sync_rejects_mistyped_settings_before_writing(tmp_path, monkeypatch, settings):
+    monkeypatch.chdir(tmp_path)
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps({"projects": [{"name": "demo", "repo_path": str(tmp_path)}], **settings})
+    )
+    lines = Lines()
+    outcome = pipeline.sync(None, profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 1
+    assert "must be true/false" in lines.text()
+    section, values = next(iter(settings.items()))
+    assert f"{section}.{next(iter(values))}" in lines.text()
+    assert not (tmp_path / "projects").exists()
+
+
 def test_mining_keeps_config_passed_through_the_environment(tmp_path, monkeypatch):
     from archaeology.extractors.git import git_env
 

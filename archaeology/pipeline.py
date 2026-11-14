@@ -1001,7 +1001,46 @@ def sync(
         return SyncOutcome(1)
 
     registered = profile.get("projects", [])
-    sync_cfg = profile.get("sync", {})
+    canonical = profile.get("sync", {})
+    legacy = profile.get("sync_settings", {})
+    if not isinstance(canonical, dict) or not isinstance(legacy, dict):
+        say("Error: 'sync' and 'sync_settings' must be JSON objects.", err=True)
+        return SyncOutcome(1)
+    legacy_keys = {
+        "auto_mine": "run_mine",
+        "auto_signals": "run_signals",
+        "min_gap_days": "default_min_gap_days",
+    }
+    canonical_keys = {"run_mine", "run_signals", "run_analysis", "default_min_gap_days"}
+    if "sync_settings" in profile:
+        say("Warning: sync_settings is deprecated; use sync instead.", err=True)
+    for section, data, allowed in (
+        ("sync", canonical, canonical_keys),
+        ("sync_settings", legacy, set(legacy_keys)),
+    ):
+        for key in sorted(data.keys() - allowed):
+            say(f"Warning: unknown {section} setting '{key}'.", err=True)
+    sync_cfg = {legacy_keys[key]: value for key, value in legacy.items() if key in legacy_keys}
+    sync_cfg.update(canonical)
+    origin = {legacy_keys[key]: f"sync_settings.{key}" for key in legacy if key in legacy_keys}
+    origin.update({key: f"sync.{key}" for key in canonical})
+    bad = [
+        origin[key]
+        for key, value in sync_cfg.items()
+        if (key in ("run_mine", "run_signals", "run_analysis") and not isinstance(value, bool))
+        or (
+            key == "default_min_gap_days"
+            and (isinstance(value, bool) or not isinstance(value, int) or value < 0)
+        )
+    ]
+    if bad:
+        say(
+            "Error: sync setting(s) "
+            + ", ".join(sorted(bad))
+            + " must be true/false (run_*) or a whole number of days >= 0.",
+            err=True,
+        )
+        return SyncOutcome(1)
 
     if not isinstance(registered, list):
         say(
@@ -1117,7 +1156,7 @@ def sync(
             project_statuses[proj["name"]] = "failed"
 
     # Phase 1: Mine each project
-    if not skip_mine:
+    if not skip_mine and sync_cfg.get("run_mine", True):
         for proj in targets:
             if project_statuses.get(proj["name"]) == "failed":
                 continue

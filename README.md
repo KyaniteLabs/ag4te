@@ -208,9 +208,21 @@ Configure multiple projects in `config/profile.json`:
   "developer": {
     "name": "Your Name",
     "github_username": "yourusername"
+  },
+  "sync": {
+    "run_mine": true,
+    "run_signals": true,
+    "run_analysis": true,
+    "default_min_gap_days": 14
   }
 }
 ```
+
+The `sync` settings control mining, signals, analysis, and the gap threshold in
+days. The deprecated `sync_settings` keys `auto_mine`, `auto_signals`, and
+`min_gap_days` fall back to `run_mine`, `run_signals`, and
+`default_min_gap_days`, respectively. Canonical `sync` values take precedence;
+unknown settings produce a warning.
 
 Then run sync operations:
 
