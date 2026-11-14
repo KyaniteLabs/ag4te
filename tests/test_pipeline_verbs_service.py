@@ -11,6 +11,7 @@ Nothing is mocked except the Datasette launch.
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -330,3 +331,184 @@ def test_sync_with_a_mistyped_project_name_fails_before_writing(tmp_path, monkey
     assert "Unknown project: dmeo" in lines.text()
     assert "Sync complete." not in lines.text()
     assert list(workspace.iterdir()) == []
+
+
+def test_bare_repository_is_mined_by_sync_and_pipeline(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path / "source")
+    bare = tmp_path / "mirror.git"
+    subprocess.run(["git", "clone", "--bare", "-q", str(repo), str(bare)], check=True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("DEVARCH_WORKSPACE", raising=False)
+
+    ref = ProjectRef.for_cli("direct", must_exist=False)
+    pipeline.init(ref, "direct", "")
+    mined = pipeline.mine(str(bare), ProjectRef.for_cli("direct"))
+    assert mined.commits == 3
+    coverage = json.loads((workspace / "projects/direct/data/coverage.json").read_text())
+    assert coverage["bare"] is True
+
+    lines = Lines()
+    outcome = pipeline.sync(["demo"], profile_path=str(_profile(tmp_path, bare)), on_line=lines)
+    assert outcome.exit_code == 0
+    assert "3 commits extracted" in lines.text()
+    assert (workspace / "projects/demo/data/github-commits.csv").exists()
+
+
+def test_cli_mine_accepts_bare_repository(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from archaeology.cli import main
+
+    repo = _make_repo(tmp_path / "source")
+    bare = tmp_path / "mirror.git"
+    subprocess.run(["git", "clone", "--bare", "-q", str(repo), str(bare)], check=True)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    assert runner.invoke(main, ["init", "demo"]).exit_code == 0
+    result = runner.invoke(main, ["mine", str(bare), "-p", "demo"])
+    assert result.exit_code == 0, result.output
+    assert "Extracted 3 commits" in result.output
+
+
+def test_require_git_repo_rejects_a_folder_inside_a_repository(tmp_path):
+    repo = _make_repo(tmp_path / "source")
+    (repo / "sub").mkdir()
+    with pytest.raises(PipelineError) as inner:
+        pipeline.require_git_repo(str(repo / "sub"))
+    assert inner.value.kind == "not-git"
+    assert "inside" in inner.value.message
+    with pytest.raises(PipelineError) as git_dir:
+        pipeline.require_git_repo(str(repo / ".git"))
+    assert git_dir.value.kind == "not-git"
+    assert pipeline.require_git_repo(str(repo)) == str(repo)
+
+
+def test_require_git_repo_ignores_inherited_git_dir(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path / "source")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
+    with pytest.raises(PipelineError) as exc:
+        pipeline.require_git_repo(str(plain))
+    assert exc.value.kind == "not-git"
+
+
+def test_require_git_repo_reports_dubious_ownership(tmp_path, monkeypatch):
+    bare = tmp_path / "mirror.git"
+    bare.mkdir()
+    real_run = subprocess.run
+
+    def refuse(cmd, *args, **kwargs):
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 128, b"", b"fatal: detected dubious ownership in repository"
+            )
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline.subprocess, "run", refuse)
+    with pytest.raises(RuntimeError, match="dubious ownership"):
+        pipeline.require_git_repo(str(bare))
+
+
+def test_bare_repository_with_unborn_head_is_mined(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path / "source")
+    bare = tmp_path / "mirror.git"
+    subprocess.run(["git", "clone", "--bare", "-q", str(repo), str(bare)], check=True)
+    subprocess.run(
+        ["git", "-C", str(bare), "symbolic-ref", "HEAD", "refs/heads/unborn"], check=True
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("DEVARCH_WORKSPACE", raising=False)
+    pipeline.init(ProjectRef.for_cli("unborn", must_exist=False), "unborn", "")
+    assert pipeline.mine(str(bare), ProjectRef.for_cli("unborn")).commits == 3
+    coverage = json.loads((workspace / "projects/unborn/data/coverage.json").read_text())
+    assert coverage["head"] is None
+    assert coverage["commit_count"] == 3
+
+
+def test_inherited_git_dir_cannot_redirect_mining(tmp_path, monkeypatch):
+    from archaeology.extractors.git import extract_git_log
+
+    wanted = _make_repo(tmp_path / "wanted")
+    other = _make_repo(tmp_path / "other")
+    (other / "extra").write_text("x")
+    subprocess.run(["git", "-C", str(other), "add", "."], check=True, env={**os.environ, **GIT_ENV})
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(other),
+            "-c",
+            "user.name=O",
+            "-c",
+            "user.email=o@example.com",
+            "commit",
+            "-qm",
+            "other only",
+        ],
+        check=True,
+        env={**os.environ, **GIT_ENV},
+    )
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    csv_path = tmp_path / "out.csv"
+    extract_git_log(str(wanted), str(csv_path))
+    assert "other only" not in csv_path.read_text()
+
+
+def test_cli_mine_rejects_a_folder_inside_a_repository(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from archaeology.cli import main
+
+    repo = _make_repo(tmp_path / "source")
+    (repo / "sub").mkdir()
+    (tmp_path / "projects" / "sub" / "data").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["mine", str(repo / "sub"), "-p", "sub"])
+    assert result.exit_code != 0
+    assert "inside the repository at" in result.output
+    assert not (tmp_path / "projects" / "sub" / "data" / "github-commits.csv").exists()
+
+
+def test_sync_names_the_enclosing_repository_for_a_subfolder(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path / "source")
+    (repo / "sub").mkdir()
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"projects": [{"name": "sub", "repo_path": str(repo / "sub")}]}))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    lines = Lines()
+    pipeline.sync(None, profile_path=str(profile), on_line=lines)
+    assert "inside the repository at" in lines.text()
+
+
+def test_mining_keeps_config_passed_through_the_environment(tmp_path, monkeypatch):
+    from archaeology.extractors.git import git_env
+
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.directory")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "*")
+    monkeypatch.setenv("GIT_DIR", str(tmp_path))
+    env = git_env()
+    assert env["GIT_CONFIG_COUNT"] == "1" and env["GIT_CONFIG_KEY_0"] == "safe.directory"
+    assert "GIT_DIR" not in env
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="needs non-UTF-8 file names")
+def test_repository_path_that_is_not_utf8_is_accepted(tmp_path):
+    repo = _make_repo(Path(os.fsdecode(os.fsencode(str(tmp_path)) + b"/caf\xe9")))
+    assert pipeline.require_git_repo(str(repo)) == str(repo)
+
+
+def test_bare_repository_name_with_a_unicode_line_separator_is_accepted(tmp_path):
+    bare = tmp_path / "bare\u2028x.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", str(bare)], check=True, env={**os.environ, **GIT_ENV}
+    )
+    assert pipeline.require_git_repo(str(bare)) == str(bare)

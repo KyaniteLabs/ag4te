@@ -140,6 +140,12 @@ def mine(repo_path, project, verbose):
         click.echo(f"Repository not found: {repo_path}", err=True)
         sys.exit(1)
 
+    from .pipeline import PipelineError, require_git_repo
+
+    try:
+        require_git_repo(repo_path)
+    except (PipelineError, RuntimeError) as exc:
+        raise click.ClickException(str(exc)) from exc
     repo_path = str(Path(repo_path).expanduser().resolve())
     try:
         coverage = repository_coverage(repo_path)

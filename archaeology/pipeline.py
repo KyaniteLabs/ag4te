@@ -254,13 +254,49 @@ class MineResult:
     stats_path: str
 
 
+def _git_probe(path: str, *args: str) -> subprocess.CompletedProcess:
+    from .extractors.git import git_env
+
+    try:
+        return subprocess.run(
+            ["git", "-C", path, "rev-parse", *args], capture_output=True, timeout=300, env=git_env()
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("git binary not found. Install git and ensure it's on PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("git read timed out after 300s") from exc
+
+
 def require_git_repo(repo_path: str) -> str:
-    """Return the ``~``-expanded repo path, or raise if it is not a git checkout."""
+    """Return the ``~``-expanded repo path, or raise if it is not a repository root.
+
+    Accepts a work-tree root (including linked worktrees) or a bare repository.
+    A folder inside another repository is rejected: mining it would read the
+    enclosing repository's whole history.
+    """
     expanded = os.path.expanduser(repo_path)
     if not os.path.isdir(expanded):
         raise PipelineError(f"Repository not found: {repo_path}", kind="repo-missing")
-    if not os.path.exists(os.path.join(expanded, ".git")):  # a worktree has a .git file
+    probe = _git_probe(expanded, "--is-bare-repository", "--absolute-git-dir")
+    if probe.returncode:
+        error = probe.stderr.decode("utf-8", errors="replace").strip()
+        if os.path.exists(os.path.join(expanded, ".git")) or "dubious ownership" in error:
+            raise RuntimeError(f"git rev-parse failed: {error}")
         raise PipelineError(f"Not a git repository: {repo_path}", kind="not-git")
+    # Paths are bytes on POSIX; fsdecode round-trips non-UTF-8 names exactly.
+    is_bare, git_dir = os.fsdecode(probe.stdout).split("\n")[:2]
+    if is_bare == "true":
+        root = git_dir
+    else:
+        top = _git_probe(expanded, "--show-toplevel")
+        if top.returncode:  # e.g. the .git directory of a work tree
+            raise PipelineError(f"Not a git repository: {repo_path}", kind="not-git")
+        root = os.fsdecode(top.stdout).rstrip("\n")
+    if os.path.normcase(os.path.realpath(root)) != os.path.normcase(os.path.realpath(expanded)):
+        raise PipelineError(
+            f"Not a git repository: {repo_path} (it is inside the repository at {root})",
+            kind="not-git",
+        )
     return expanded
 
 
@@ -777,6 +813,7 @@ def cascade(
             say(f"\n[1/7] Mining git data from {repo_path}...")
             csv_path = data_dir / "github-commits.csv"
             try:
+                require_git_repo(repo_path)
                 count = extract_git_log(repo_path, str(csv_path))
                 say(f"  Extracted {count} commits")
             except (RuntimeError, Exception) as e:
@@ -1070,11 +1107,15 @@ def sync(
     if not skip_mine:
         for proj in targets:
             repo_path = os.path.expanduser(proj["repo_path"])
-            if not os.path.isdir(repo_path):
-                say(f"  SKIP {proj['name']}: repo not found at {repo_path}", err=True)
-                continue
-            if not os.path.isdir(os.path.join(repo_path, ".git")):
-                say(f"  SKIP {proj['name']}: not a git repo", err=True)
+            try:
+                require_git_repo(repo_path)
+            except PipelineError as exc:
+                reason = (
+                    f"repo not found at {repo_path}"
+                    if exc.kind == "repo-missing"
+                    else str(exc).replace("Not a git repository", "not a git repo", 1)
+                )
+                say(f"  SKIP {proj['name']}: {reason}", err=True)
                 continue
 
             say(f"  Mining {proj['name']}...")
