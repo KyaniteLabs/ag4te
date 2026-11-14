@@ -92,7 +92,9 @@
   "developer": {
     "name": "Simon Gonzalez de Cruz",
     "github_username": "simongonzalezdc",
-    "email": ""
+    "email": "",
+    "aliases": [],
+    "agent_identities": []
   },
   "sync": {
     "run_mine": true,

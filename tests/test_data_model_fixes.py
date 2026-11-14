@@ -118,7 +118,7 @@ def test_extractor_writes_email_and_parents(tmp_path):
     out = tmp_path / "c.csv"
     assert extract_git_log(str(repo), str(out)) == 1
     header, row = out.read_text().splitlines()
-    assert header == "hash,date,message,author,email,parents"
+    assert header == "hash,date,message,author,email,parents,raw_author,raw_email"
     assert row.split(",")[4] == "a@x.io"
 
 

@@ -981,6 +981,151 @@ def test_sync_rejects_mistyped_settings_before_writing(tmp_path, monkeypatch, se
     assert not (tmp_path / "projects").exists()
 
 
+def _identity_history(repo):
+    repo.mkdir()
+    env = {
+        **os.environ,
+        **GIT_ENV,
+        "GIT_COMMITTER_NAME": "Committer",
+        "GIT_COMMITTER_EMAIL": "c@example.test",
+    }
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, env=env)
+    from datetime import date, timedelta
+
+    for day in range(28):
+        bot = day >= 12
+        when = (date(2026, 1, 1) + timedelta(days=day)).isoformat() + "T12:00:00+0000"
+        commit_env = {
+            **env,
+            "GIT_AUTHOR_NAME": "dependabot[bot]" if bot else "Real Human",
+            "GIT_AUTHOR_EMAIL": "dep@example.test" if bot else "human@example.test",
+            "GIT_AUTHOR_DATE": when,
+            "GIT_COMMITTER_DATE": when,
+        }
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "--allow-empty", "-q", "-m", "work"],
+            check=True,
+            env=commit_env,
+        )
+    return repo
+
+
+def test_mailmap_cannot_hide_author_class_shift(tmp_path, monkeypatch):
+    repo = _identity_history(tmp_path / "repo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DEVARCH_WORKSPACE", raising=False)
+    ref = ProjectRef.for_cli("demo", must_exist=False)
+    pipeline.init(ref, "demo", "")
+
+    def shifts():
+        pipeline.mine(str(repo), ref)
+        pipeline.build_db(ref)
+        return [s for s in pipeline.signals(ref).signals if s["type"] == "author_class"]
+
+    assert [(s["from_class"], s["to_class"]) for s in shifts()] == [("human", "bot")]
+    (repo / ".mailmap").write_text(
+        "Real Human <human@example.test> dependabot[bot] <dep@example.test>\n"
+    )
+    assert [(s["from_class"], s["to_class"]) for s in shifts()] == [("human", "bot")]
+
+
+def test_sync_uses_custom_profile_identities(tmp_path, monkeypatch):
+    repo = _identity_history(tmp_path / "repo")
+    workspace = tmp_path / "workspace"
+    (workspace / "config").mkdir(parents=True)
+    (workspace / "config/profile.json").write_text(
+        json.dumps({"developer": {"name": "Real Human", "agent_identities": []}})
+    )
+    custom = tmp_path / "profile.json"
+    custom.write_text(
+        json.dumps(
+            {
+                "developer": {
+                    "name": "Owner",
+                    "aliases": ["Real Human"],
+                    "agent_identities": ["dependabot[bot]"],
+                },
+                "sync": {"run_signals": True, "run_analysis": False},
+                "projects": [{"name": "demo", "repo_path": str(repo)}],
+            }
+        )
+    )
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("DEVARCH_WORKSPACE", raising=False)
+    assert pipeline.sync(["demo"], profile_path=str(custom)).exit_code == 0
+    result = json.loads((workspace / "projects/demo/data/detected-signals.json").read_text())
+    shifts = [s for s in result["signals"] if s["type"] == "author_class"]
+    assert [(s["from_class"], s["to_class"]) for s in shifts] == [("human", "agent")]
+    assert "Owner to dependabot[bot]" in shifts[0]["detail"]
+
+
+def test_mining_does_not_run_repository_configured_signature_programs(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path / "source")
+    marker = tmp_path / "ran"
+    program = tmp_path / "fake-gpg"
+    program.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+    program.chmod(0o755)
+    subprocess.run(["git", "-C", str(repo), "config", "log.showSignature", "true"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "gpg.program", str(program)], check=True)
+    head = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "commit", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    header, body = head.split("\n\n", 1)
+    signed = (
+        header
+        + "\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n -----END PGP SIGNATURE-----\n\n"
+        + body
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(repo), "hash-object", "-t", "commit", "-w", "--stdin"],
+        input=signed,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "-C", str(repo), "update-ref", "refs/heads/signed", sha], check=True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("DEVARCH_WORKSPACE", raising=False)
+    pipeline.init(ProjectRef.for_cli("sig", must_exist=False), "sig", "")
+    pipeline.mine(str(repo), ProjectRef.for_cli("sig"))
+    assert not marker.exists()
+
+
+def test_mining_accepts_out_of_range_timezone_offsets(tmp_path):
+    from archaeology.extractors.git import extract_git_log
+
+    repo = _make_repo(tmp_path / "repo")
+    env = {**os.environ, **GIT_ENV}
+
+    def git(*args, stdin=None):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            env=env,
+            capture_output=True,
+            text=True,
+            input=stdin,
+        ).stdout.strip()
+
+    tree = git("rev-parse", "HEAD^{tree}")
+    parent = git("rev-parse", "HEAD")
+    body = (
+        f"tree {tree}\nparent {parent}\n"
+        "author Old <old@example.com> 1700000000 +2500\n"
+        "committer Old <old@example.com> 1700000000 +2500\n\nancient import\n"
+    )
+    sha = git("hash-object", "-t", "commit", "-w", "--literally", "--stdin", stdin=body)
+    git("update-ref", "refs/heads/old", sha)
+    csv_path = tmp_path / "out.csv"
+    extract_git_log(str(repo), str(csv_path))
+    assert f"{sha},2023-11-14T22:13:20+00:00,ancient import" in csv_path.read_text()
+
+
 def test_mining_keeps_config_passed_through_the_environment(tmp_path, monkeypatch):
     from archaeology.extractors.git import git_env
 

@@ -81,24 +81,34 @@ def extract_git_log(repo_path: str, output_path: str, verbose: bool = False) -> 
 
     from ..utils import atomic_write
 
-    raw = _git(repo_path, "log", "-z", "--all", "--format=%H%x00%aI%x00%s%x00%an%x00%ae%x00%P")
+    raw = _git(
+        repo_path,
+        "log",
+        "--no-show-signature",
+        "--use-mailmap",
+        "-z",
+        "--all",
+        "--format=%H%x00%at%x00%s%x00%aN%x00%aE%x00%P%x00%an%x00%ae",
+    )
     fields = raw.split("\0")
     if fields[-1] == "":
         fields.pop()
-    if len(fields) % 6:
+    if len(fields) % 8:
         raise RuntimeError("Malformed Git extraction; refusing partial history")
     stream = io.StringIO(newline="")
     writer = csv.writer(stream, lineterminator="\n")
     # email and parents identify people across name spellings and mark
     # merges (more than one parent); older readers ignore extra columns.
-    writer.writerow(["hash", "date", "message", "author", "email", "parents"])
-    for i in range(0, len(fields), 6):
-        sha, date, subject, author, email, parents = fields[i : i + 6]
-        normalized = (
-            datetime.fromisoformat(date.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
-        )
-        writer.writerow([sha, normalized, subject, author, email, parents])
-    count = len(fields) // 6
+    writer.writerow(
+        ["hash", "date", "message", "author", "email", "parents", "raw_author", "raw_email"]
+    )
+    for i in range(0, len(fields), 8):
+        sha, date, subject, author, email, parents, raw_author, raw_email = fields[i : i + 8]
+        # Epoch seconds, not %aI: old commits can carry offsets such as +2500
+        # that git records but Python's ISO parser rejects.
+        normalized = datetime.fromtimestamp(int(date), timezone.utc).isoformat()
+        writer.writerow([sha, normalized, subject, author, email, parents, raw_author, raw_email])
+    count = len(fields) // 8
     expected = int(_git(repo_path, "rev-list", "--all", "--count").strip())
     if count != expected:
         raise RuntimeError("Repository changed during extraction; retry against frozen refs")
@@ -110,7 +120,19 @@ def extract_git_log(repo_path: str, output_path: str, verbose: bool = False) -> 
 
 def extract_git_log_with_stats(repo_path: str, output_path: str, verbose: bool = False) -> int:
     """Extract git log with file change stats."""
-    cmd = ["git", "-C", repo_path, "log", "--format=%H%x1f%ai%x1f%s%x1f%an", "--shortstat", "--all"]
+    cmd = [
+        "git",
+        "-C",
+        repo_path,
+        "log",
+        "--no-show-signature",
+        "--use-mailmap",
+        "--format=%H%x1f%ai%x1f%s%x1f%aN",
+        "--shortstat",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--all",
+    ]
     try:
         result = subprocess.run(
             cmd,

@@ -11,12 +11,14 @@ Era definitions live in a hand-curated eras.json file.
 
 import argparse
 import json
+import re
 import sqlite3
 from collections import Counter
 from datetime import datetime
+from itertools import groupby
 from pathlib import Path
 
-from ..utils import _parse_date, _script_dir
+from ..utils import _load_json, _parse_date, _script_dir
 
 # Default config values
 DEFAULTS = {
@@ -30,6 +32,8 @@ DEFAULTS = {
         "architecture",
     ],
     "cross_repo_activation_threshold": 3,
+    "author_debounce_days": 7,
+    "author_debounce_commits": None,
 }
 
 
@@ -44,6 +48,96 @@ def _load_defaults_json() -> dict:
         except (json.JSONDecodeError, OSError):
             pass
     return {}
+
+
+def _identity_values(value):
+    if isinstance(value, dict):
+        return [
+            item
+            for group in value.values()
+            if isinstance(group, list)
+            for item in group
+            if isinstance(item, str)
+        ]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    return []
+
+
+def _identity_settings(db_path, config):
+    project = Path(db_path).parent.parent
+    project_config = _load_json(project / "project.json") or {}
+    workspace_profile = Path.cwd() / "config" / "profile.json"
+    packaged_profile = _script_dir().parent / "config" / "profile.json"
+    explicit_profile = config.get("identity_profile")
+    profile = (
+        explicit_profile
+        if isinstance(explicit_profile, dict)
+        else (
+            _load_json(workspace_profile if workspace_profile.exists() else packaged_profile) or {}
+        )
+    )
+    developer = {}
+    sources = (
+        (profile, config)
+        if isinstance(explicit_profile, dict)
+        else (project_config, profile, config)
+    )
+    for source in sources:
+        if isinstance(source, dict) and isinstance(source.get("developer"), dict):
+            developer.update(source["developer"])
+
+    aliases = {}
+    canonical = developer.get("name") or developer.get("email") or ""
+    if isinstance(canonical, str) and canonical.strip():
+        values = [canonical, developer.get("email"), *_identity_values(developer.get("aliases"))]
+        for alias in values:
+            if isinstance(alias, str) and alias.strip():
+                aliases[alias.strip().casefold()] = canonical.strip()
+
+    agents = {
+        name.strip().casefold()
+        for name in _identity_values(developer.get("agent_identities"))
+        if name.strip()
+    }
+    for path in (project / "data" / "identity_map.json", project / "identity_map.json"):
+        identity_map = _load_json(path) or {}
+        if not isinstance(identity_map, dict):
+            continue
+        mapping = identity_map.get("aliases", identity_map)
+        if isinstance(mapping, dict):
+            for alias, name in mapping.items():
+                if (
+                    isinstance(alias, str)
+                    and isinstance(name, str)
+                    and alias.strip()
+                    and name.strip()
+                ):
+                    aliases[alias.strip().casefold()] = name.strip()
+        agents.update(
+            name.strip().casefold()
+            for name in _identity_values(identity_map.get("agent_identities"))
+            if name.strip()
+        )
+    return aliases, agents
+
+
+_BOT_IDENTITY = re.compile(r"(?:^|[._+-])bot$")
+
+
+def _identity_class(author, email, canonical, agents):
+    values = (author.strip().casefold(), email.strip().casefold(), canonical.strip().casefold())
+    if any(value in agents for value in values if value):
+        return "agent"
+    raw_values = (author.strip().casefold(), email.strip().casefold())
+    if any(
+        value.split("@", 1)[0].endswith("[bot]") or _BOT_IDENTITY.search(value.split("@", 1)[0])
+        for value in raw_values
+    ):
+        return "bot"
+    if any(value.split("@", 1)[0] in ("repo-pipeline", "github-actions") for value in raw_values):
+        return "bot"
+    return "human"
 
 
 class SignalDetector:
@@ -64,6 +158,7 @@ class SignalDetector:
         if config:
             merged.update(config)
         self.config = merged
+        self.author_aliases, self.agent_identities = _identity_settings(self.db_path, merged)
 
         self.min_gap_days: int = merged["min_gap_days"]
         self.velocity_shift_factor: float = merged["velocity_shift_factor"]
@@ -137,14 +232,13 @@ class SignalDetector:
         try:
             conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=30)
             conn.row_factory = sqlite3.Row
-            try:
-                cursor = conn.execute(
-                    "SELECT date, author, message, repo FROM commits ORDER BY date ASC"
-                )
-                has_repo = True
-            except sqlite3.OperationalError:
-                cursor = conn.execute("SELECT date, author, message FROM commits ORDER BY date ASC")
-                has_repo = False
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(commits)")}
+            optional = [
+                name for name in ("repo", "email", "raw_author", "raw_email") if name in columns
+            ]
+            cursor = conn.execute(
+                f"SELECT {', '.join(['date', 'author', 'message', *optional])} FROM commits ORDER BY date ASC"
+            )
             rows = cursor.fetchall()
         except sqlite3.OperationalError:
             return []
@@ -156,12 +250,34 @@ class SignalDetector:
 
         commits = []
         for row in rows:
+            author = str(row["author"]) if row["author"] else ""
+            email = str(row["email"]) if "email" in columns and row["email"] else ""
+            canonical = (
+                self.author_aliases.get(email.strip().casefold())
+                or self.author_aliases.get(author.strip().casefold())
+                or author
+            )
+            raw_author = (
+                str(row["raw_author"]) if "raw_author" in columns and row["raw_author"] else author
+            )
+            raw_email = (
+                str(row["raw_email"]) if "raw_email" in columns and row["raw_email"] else email
+            )
+            raw_canonical = (
+                self.author_aliases.get(raw_email.strip().casefold())
+                or self.author_aliases.get(raw_author.strip().casefold())
+                or raw_author
+            )
             commits.append(
                 {
                     "date": str(row["date"]) if row["date"] else "",
-                    "author": str(row["author"]) if row["author"] else "",
+                    "author": canonical,
+                    "email": email,
+                    "author_class": _identity_class(
+                        raw_author, raw_email, raw_canonical, self.agent_identities
+                    ),
                     "message": str(row["message"]) if row["message"] else "",
-                    "repo": (str(row["repo"]) if has_repo and row["repo"] else ""),
+                    "repo": str(row["repo"]) if "repo" in columns and row["repo"] else "",
                 }
             )
         # SQL sorted the date *text*; mixed UTC offsets make that disagree with
@@ -305,41 +421,74 @@ class SignalDetector:
     # ------------------------------------------------------------------
 
     def _detect_author_changes(self, commits: list[dict]) -> list[dict]:
-        """Find positions where the primary author changes."""
-        if len(commits) < 10:
-            return []
-
-        window_size = max(10, len(commits) // 5)
-        raw_boundaries = []
-
-        def primary_author(start: int, end: int) -> str:
-            authors = Counter(
-                commits[j]["author"]
-                for j in range(start, min(end, len(commits)))
-                if commits[j]["author"]
-            )
-            return authors.most_common(1)[0][0] if authors else ""
-
-        for i in range(window_size, len(commits) - window_size):
-            before_author = primary_author(i - window_size, i)
-            after_author = primary_author(i, i + window_size)
-
-            if before_author and after_author and before_author != after_author:
-                raw_boundaries.append((i, before_author, after_author))
-
-        deduped = self._deduplicate(raw_boundaries, min_gap=10)
-
+        """Report sustained changes in the daily primary author or author class."""
+        days = max(0, int(self.config.get("author_debounce_days", 7)))
+        commit_limit = self.config.get("author_debounce_commits")
+        commit_limit = max(1, int(commit_limit)) if commit_limit is not None else None
+        current = None
+        candidate = None
+        candidate_start = None
+        candidate_index = 0
+        candidate_count = 0
         signals = []
-        for idx, before, after in deduped:
-            signals.append(
-                {
-                    "index": idx,
-                    "date": commits[idx]["date"][:10] if len(commits[idx]["date"]) >= 10 else "",
-                    "type": "author",
-                    "detail": f"primary author shifts from {before} to {after}",
+
+        def day_of(item):
+            parsed = _parse_date(item[1]["date"])
+            return parsed.date() if parsed else None
+
+        for day, group in groupby(enumerate(commits), key=day_of):
+            if day is None:
+                continue
+            counts = Counter()
+            first_indices = {}
+            for index, commit in group:
+                if not commit["author"]:
+                    continue
+                identity = (commit["author"], commit.get("author_class", "human"))
+                counts[identity] += 1
+                first_indices.setdefault(identity, index)
+            if not counts:
+                continue
+            highest = max(counts.values())
+            tied = [identity for identity, count in counts.items() if count == highest]
+            primary = current if current in tied else candidate if candidate in tied else tied[0]
+            if current is None:
+                current = primary
+                continue
+            if primary == current:
+                candidate = None
+                continue
+            if primary != candidate:
+                candidate = primary
+                candidate_start = day
+                candidate_index = first_indices[primary]
+                candidate_count = 0
+            candidate_count += counts[primary]
+            if (day - candidate_start).days < days and (
+                commit_limit is None or candidate_count < commit_limit
+            ):
+                continue
+            before, before_class = current
+            after, after_class = candidate
+            if before_class != after_class:
+                signal = {
+                    "type": "author_class",
+                    "detail": f"author class shifts from {before_class} to {after_class} ({before} to {after})",
+                    "from_class": before_class,
+                    "to_class": after_class,
                     "strength": "strong",
                 }
+            else:
+                signal = {
+                    "type": "author",
+                    "detail": f"primary author shifts from {before} to {after}",
+                    "strength": "moderate",
+                }
+            signals.append(
+                {"index": candidate_index, "date": candidate_start.isoformat(), **signal}
             )
+            current = candidate
+            candidate = None
         return signals
 
     # ------------------------------------------------------------------

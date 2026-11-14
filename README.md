@@ -241,6 +241,33 @@ Each project needs a `name` and a repository location. `path` (shown above) and
 `repo_path` are both accepted for the location; `repo_path` is the canonical
 key used by the shipped `config/profile.json`.
 
+### Author identities
+
+Mining uses each repository's `.mailmap` for display names and emails; bot and
+agent classification uses the raw commit identity. Re-mine older extractions to
+retain raw identities. Mining repositories you did not create runs Git with their
+repository configuration, so inspect or isolate untrusted repositories first. In
+`config/profile.json`, `developer.aliases` lists alternate names or emails for
+`developer.name`, and `developer.agent_identities` lists agent names or emails.
+For project-specific mappings, add `projects/<project>/identity_map.json`:
+
+```json
+{
+  "aliases": {"Alternate Name": "Canonical Name", "alias@example.com": "Canonical Name"},
+  "agent_identities": ["Example Agent", "agent@example.com"]
+}
+```
+
+Author shifts use the daily primary author and wait seven days by default;
+`author_debounce_days` and optional `author_debounce_commits` in a JSON file
+passed to `devarch signals --config` adjust that threshold. Class changes among humans,
+bots and configured agents produce separate strong signals. Bot classification
+uses common bot name and email patterns, so identity settings may need review.
+Identity detection uses the workspace profile when present, otherwise the
+packaged profile, and project identity-map entries take precedence. For an
+existing project synced with a custom `pipeline.sync(profile_path=...)`, put
+its aliases in `identity_map.json`: the detector does not receive that override.
+
 ## Database Inspection
 
 Start a Datasette server to inspect your archaeology database:

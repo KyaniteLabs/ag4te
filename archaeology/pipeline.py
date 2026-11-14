@@ -1254,7 +1254,9 @@ def sync(
                 continue
             say(f"  Detecting signals for {proj['name']}...")
             try:
-                result = detect_signals(proj["name"], config={"min_gap_days": min_gap})
+                result = detect_signals(
+                    proj["name"], config={"min_gap_days": min_gap, "identity_profile": profile}
+                )
             except Exception as exc:  # noqa: BLE001 - one project must not abort the rest
                 say(f"    Signal detection failed for {proj['name']}: {exc}", err=True)
                 project_statuses[proj["name"]] = "failed"
