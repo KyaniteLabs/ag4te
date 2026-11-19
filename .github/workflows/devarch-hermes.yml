@@ -1,0 +1,52 @@
+name: DevArch Hermes
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: bash scripts/devarch-vendor.sh check
+
+  install:
+    name: install (${{ matrix.hermes.version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        hermes:
+          - version: v0.21.6
+            ref: 818c13be1dc4fd28987e1e881a9408224afd4535
+          - version: v0.23.0
+            ref: 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ matrix.hermes.ref }}
+          path: .hermes-runtime
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - name: Install Hermes from its lockfile
+        working-directory: .hermes-runtime
+        run: uv sync --frozen --no-dev --python 3.14
+      - name: Verify DevArch dependencies and run the demo
+        working-directory: .hermes-runtime
+        run: .venv/bin/python "$GITHUB_WORKSPACE/scripts/check_devarch_hermes_install.py"

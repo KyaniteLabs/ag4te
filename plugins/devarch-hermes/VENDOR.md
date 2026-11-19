@@ -6,18 +6,28 @@ Omitted from the vendor copy (not used by this Hermes wrap):
 - `mcp_server/` (optional `mcp` extra)
 - `templates/` and large `visualization/*.html` dashboards (HTML comment scanner caution; wrap uses markdown report + `_markdown_to_html`)
 
-Refresh from repo root:
+The framework at the repository root owns shared extraction and report behavior. Keep fixes specific to the native Hermes wrapper in the wrapper or in the recorded vendor patch. When a framework fix affects both entry points, update the root framework first and keep the native copy in sync.
+
+From a checkout with the upstream commit in its Git history, verify the committed copy:
 
 ```bash
-rm -rf plugins/devarch-hermes/archaeology
-mkdir -p plugins/devarch-hermes/archaeology
-tar -C archaeology -cf - \
-  --exclude='__pycache__' --exclude='*.pyc' --exclude='mcp_server' \
-  --exclude='templates' \
-  --exclude='visualization/template.html' \
-  --exclude='visualization/global-template.html' \
-  --exclude='visualization/multi-project-dashboard.html' \
-  . | tar -C plugins/devarch-hermes/archaeology -xf -
+bash scripts/devarch-vendor.sh check
+```
+
+The check reconstructs the tree from the plugin's source pin and applies [the recorded patch](../../scripts/devarch-vendor.patch). CI compares that result to the checked-in vendor tree.
+
+To refresh, update `PINNED_SHA` in the plugin and render to a new scratch directory before touching the existing vendor tree:
+
+```bash
+bash scripts/devarch-vendor.sh render /tmp/devarch-vendor-candidate
+```
+
+If the patch conflicts, the command leaves the new source tree in the scratch directory and exits with an error. Reconcile the patch there and review the diff before updating the vendored files. After intentional edits or a refresh, record the revised patch and rerun the check:
+
+```bash
+vendor_patch=$(mktemp)
+bash scripts/devarch-vendor.sh record > "$vendor_patch" && mv "$vendor_patch" scripts/devarch-vendor.patch
+bash scripts/devarch-vendor.sh check
 ```
 
 ## Plugin-local patches (KLH-328 Kai review)
@@ -31,4 +41,4 @@ Applied on top of the pinned vendor copy for the Hermes wrap (kept in sync with 
 - `report.py`, `visualization/dashboard.py`, `visualization/agent_benchmark.py` — package-relative imports support the isolated `_devarch_vendor` namespace. The wrapper never prefers an arbitrary installed framework.
 - Wrapper project transactions serialize full operations across threads/processes; complete pipelines retain the same lock across nested stages.
 
-**Refresh warning:** the raw copy commands above do not preserve these patches. Reapply and rerun the full framework + plugin suite, native runtime/validator and deterministic concurrency/content-integrity probes after any refresh.
+After a refresh, run the framework and plugin tests, including the real Hermes dependency install and demo in the DevArch Hermes workflow. Review the mining, concurrency and evidence integrity tests along with the patch.

@@ -32,6 +32,12 @@ skill complete the same workflow without starting an MCP server.
 | `/devarch` | mine, signals, report, pipeline, list, version, status, help |
 | Hooks | archaeology brief and mine/report summary ledger |
 
+## Choose a Hermes entry point
+
+Use DevArch for agent tools, `/devarch`, and evidence reports in a Hermes session. Use [AG4TE Desktop](https://github.com/KyaniteLabs/ag4te/tree/main/plugins/ag4te-hermes) for interactive digs and visual history. Desktop runs the pinned DevArch CLI and stores digs under `plugin-data/ag4te`. This wrapper uses the vendored Python API and stores reports under `plugin-data/devarch`. Each entry point reads its own artifacts and settings.
+
+Shared extraction and report behavior belongs in the framework at the repository root. Changes that affect both entry points should be verified through both. See [vendor maintenance](VENDOR.md) for keeping the native copy reproducible.
+
 ## Install and run
 
 Requires Git, Python >=3.10 and Hermes >=0.21.6. Catalog installation must pin the
@@ -46,6 +52,8 @@ hermes plugins enable devarch
 
 The unpinned repository install above is for local development only. Follow
 `submission/CLICK-PACKET.md` for pinned catalog preparation.
+
+The DevArch Hermes CI workflow installs the manifest dependencies in clean Hermes v0.21.6 and v0.23.0 profiles and runs a five-commit report demo using the resulting environments.
 
 ```text
 /devarch pipeline /path/to/full/local/checkout demo
