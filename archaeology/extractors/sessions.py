@@ -637,6 +637,18 @@ def extract_narrative(
 # ---------------------------------------------------------------------------
 
 
+def _since_timestamp(value: str) -> float:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError
+        return parsed.timestamp()
+    except (ValueError, OverflowError, OSError) as exc:
+        raise argparse.ArgumentTypeError(
+            "expected an ISO 8601 timestamp with a UTC offset"
+        ) from exc
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Extract narrative material from Claude Code JSONL session files."
@@ -658,6 +670,9 @@ def parse_args(argv=None):
         "--project",
         default=None,
         help="Project name; loads projects/<name>/project.json for config",
+    )
+    parser.add_argument(
+        "--since", type=_since_timestamp, help="Ignore files modified before this time"
     )
     return parser.parse_args(argv)
 
@@ -682,6 +697,8 @@ def main(argv=None):
     emotional_kw, philosophical_kw, redact_pat = resolve_config(args)
 
     files = sorted(glob.glob(os.path.join(sessions_dir, "*.jsonl")))
+    if args.since is not None:
+        files = [path for path in files if os.path.getmtime(path) >= args.since]
     print(f"Found {len(files)} session files in {sessions_dir}")
 
     sessions = []

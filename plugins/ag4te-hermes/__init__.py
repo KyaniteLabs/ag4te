@@ -1315,7 +1315,12 @@ def _sha(v: Any) -> str:
 
 
 def summarize(
-    pdir: Path, *, repo: str = "", project: str = "", settings: Optional[Dict[str, Any]] = None
+    pdir: Path,
+    *,
+    repo: str = "",
+    project: str = "",
+    settings: Optional[Dict[str, Any]] = None,
+    evidence: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Fold a dig's project directory into the ``dig.json`` the Desktop page draws."""
     data = pdir / "data"
@@ -1429,6 +1434,8 @@ def summarize(
 
     work = [c for c in commits if not c["merge"]]
     merges = len(commits) - len(work)
+    if evidence is not None:
+        evidence.update(commits=commits, eras=[], signals=[])
     out.update(commit_count=len(work), merge_count=merges, total_commits=len(commits))
     if not work:
         out.update(
@@ -1536,6 +1543,12 @@ def summarize(
 
     signals_doc = _read_json(data / "detected-signals.json") or {}
     raw_signals = signals_doc.get("signals") if isinstance(signals_doc, dict) else None
+    if evidence is not None:
+        evidence["signals"] = [
+            {key: signal.get(key) for key in ("type", "date", "detail", "strength")}
+            for signal in (raw_signals if isinstance(raw_signals, list) else [])
+            if isinstance(signal, dict)
+        ]
     signals = []
     for sg in fold_signals(raw_signals or [], SIGNAL_MERGE_DAYS):
         if sg["type"] == "velocity" and _restates_gap(sg, gaps):
@@ -1693,6 +1706,8 @@ def summarize(
         }
     )
     out["story"] = story(out)
+    if evidence is not None:
+        evidence["eras"] = [[era["start"], era["end"]] for era in clusters]
     return out
 
 
@@ -1951,6 +1966,59 @@ def dig_steps(repo: Path, project: str) -> List[Tuple[str, List[str], bool]]:
     ]
 
 
+def _record_delta(
+    summary: Dict[str, Any], evidence: Dict[str, Any], previous: Any, requested: bool
+) -> None:
+    """Store a complete baseline alongside the public summary in one atomic write."""
+    manifest = summary["manifest"]
+    baseline = previous.get("_delta_baseline") if isinstance(previous, dict) else None
+    signals = evidence["signals"]
+    commits = evidence["commits"]
+    current = {
+        "repo": summary["repo"],
+        "head": manifest["head_sha"],
+        "config": manifest["config_hash"],
+        "commits": sorted({c["sha"] for c in commits}),
+        "signals": signals,
+        "eras": evidence["eras"],
+    }
+    summary["_delta_baseline"] = current
+    if not requested:
+        return
+    if baseline is None:
+        summary["delta"] = {"seeded": True}
+        return
+    if (baseline["repo"], baseline["config"]) != (current["repo"], current["config"]):
+        raise DigError("Repository or dig settings changed; run Dig to set a new baseline")
+
+    known = set(baseline["commits"])
+    seen = {(s.get("type"), s.get("date"), s.get("detail")) for s in baseline["signals"]}
+    new = []
+    for commit in reversed(commits):
+        if commit["sha"] in known:
+            continue
+        match = _SCOPE_RE.match(commit["msg"])
+        new.append(
+            {
+                "hash": commit["sha"],
+                "kind": commit["kind"],
+                "scope": match[1] if match and not commit["merge"] else None,
+                "subject": commit["msg"],
+            }
+        )
+    merges = sum(item["kind"] == "merge" for item in new)
+    summary["delta"] = {
+        "from_head": baseline["head"],
+        "to_head": current["head"],
+        "new_commits": new,
+        "commit_counts": {"code": len(new) - merges, "merge": merges},
+        "new_signals": [
+            s for s in signals if (s.get("type"), s.get("date"), s.get("detail")) not in seen
+        ],
+        "era_boundaries_changed": baseline["eras"] != current["eras"],
+    }
+
+
 def run_dig(
     repo: Path,
     project: str,
@@ -1958,6 +2026,8 @@ def run_dig(
     runner: Callable[..., Dict[str, Any]] = run_devarch,
     cancel: Optional[threading.Event] = None,
     skip: Optional[List[str]] = None,
+    *,
+    delta: bool = False,
 ) -> Dict[str, Any]:
     """Run the pipeline and write ``dig.json``. Returns the final status.
 
@@ -1985,6 +2055,7 @@ def run_dig(
         warnings=[],
         completed=done_labels,
         resumed=bool(skip_set),
+        delta=delta,
     )
 
     def stopped() -> Dict[str, Any]:
@@ -2017,7 +2088,7 @@ def run_dig(
                 "no output"
             ]
             msg = f"{label}: {tail[0][:300]}"
-            if required:
+            if required or delta:
                 return _set_status(
                     pdir, state="failed", error=msg, warnings=warnings, finished_at=time.time()
                 )
@@ -2026,9 +2097,18 @@ def run_dig(
         _set_status(pdir, completed=done_labels)
     _set_status(pdir, step=len(steps), label="Drawing the strata")
     try:
-        _write_json(
-            pdir / DIG_FILE, summarize(pdir, repo=str(repo), project=project, settings=settings)
+        evidence: Dict[str, Any] = {}
+        summary = summarize(
+            pdir, repo=str(repo), project=project, settings=settings, evidence=evidence
         )
+        if cancel is not None and cancel.is_set():
+            return stopped()
+        previous = _read_json(pdir / DIG_FILE)
+        if not warnings:
+            _record_delta(summary, evidence, previous, delta)
+        elif isinstance(previous, dict) and "_delta_baseline" in previous:
+            summary["_delta_baseline"] = previous["_delta_baseline"]
+        _write_json(pdir / DIG_FILE, summary)
     except Exception as exc:  # noqa: BLE001 - a summary bug must not leave the job "running"
         logger.exception("ag4te: summary failed")
         return _set_status(
@@ -2293,6 +2373,7 @@ def start_dig(
     settings: Optional[Dict[str, Any]] = None,
     *,
     resume: bool = False,
+    delta: bool = False,
     runner: Callable[..., Dict[str, Any]] = run_devarch,
 ) -> Dict[str, Any]:
     """Validate and start a background dig. One dig runs at a time.
@@ -2317,6 +2398,7 @@ def start_dig(
             or (_read_json(project_dir(project, settings) / META_FILE) or {}).get("repo")
         )
         skip = [x for x in (st.get("completed") or []) if isinstance(x, str)]
+        delta = st.get("delta") is True
     repo = resolve_repo(repo_path, settings)
     named = bool(project)
     project = validate_project(project or project_from_repo(repo))
@@ -2343,7 +2425,9 @@ def start_dig(
 
         def job() -> None:
             try:
-                run_dig(repo, project, settings, runner=runner, cancel=cancel, skip=skip)
+                run_dig(
+                    repo, project, settings, runner=runner, cancel=cancel, skip=skip, delta=delta
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("ag4te: dig crashed")
                 try:
@@ -2373,6 +2457,7 @@ def start_dig(
                 warnings=[],
                 completed=skip,
                 resumed=bool(skip),
+                delta=delta,
             )
             _jobs[key] = t
             _cancels[key] = cancel
@@ -2448,6 +2533,7 @@ def load_dig(project: str, settings: Optional[Dict[str, Any]] = None) -> Optiona
     d = _read_json(project_dir(project, settings) / DIG_FILE)
     if not isinstance(d, dict):
         return None
+    d.pop("_delta_baseline", None)
     if "story" not in d:  # digs saved before the story lens: tell it from what is there
         d["story"] = story(d)
     return d
