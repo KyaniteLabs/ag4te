@@ -9,7 +9,7 @@ tags: [git, archaeology, history, signals, eras, local-first, report]
 requires_hermes: ">=0.21.6"
 requires_env: []
 pip_dependencies:
-  - "click==8.1.8"
+  - "click==8.4.2"
   - "sqlite-utils==3.38"
   - "datasette==0.65.5"
 provides_tools:
