@@ -25,6 +25,10 @@ AG4TE also ships as a [Hermes](https://github.com/NousResearch/hermes-agent) plu
 
 Mining covers all **locally available refs**, records coverage and rejects shallow history. Fetch the authorized branches/tags/PR refs before mining when remote completeness matters. Automated vectors are keyword-based investigation leads, not verified source conclusions, productivity measurements or causal explanations. The default visualization contains measured daily activity only. See [0.4.0 release notes](docs/RELEASE_0.4.0.md).
 
+## Native DevArch for Hermes
+
+[DevArch for Hermes](plugins/devarch-hermes/README.md) adds `/devarch`, agent tools, and evidence reports in Hermes sessions. [AG4TE Desktop](https://github.com/KyaniteLabs/ag4te/tree/main/plugins/ag4te-hermes) provides interactive digs and visual history. Both use the DevArch framework and keep separate project data.
+
 ## What It Does
 
 DevArch transforms git history into structured insights through a full-featured CLI with 20+ commands. The framework supports:
