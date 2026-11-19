@@ -344,20 +344,45 @@ def signals(project_name, config_path, min_gap_days, verbose):
 
 
 @main.command()
+@click.argument("repo_path")
+@click.option("--delta", "baseline_project", required=True, help="Project holding the baseline")
+@click.option("--roll", is_flag=True, help="Advance the baseline after a successful dig")
+def dig(repo_path, baseline_project, roll):
+    """Report what changed in a local Git repository since a baseline dig."""
+    from .delta import run_delta
+    from .pipeline import PipelineError
+
+    try:
+        output, result = run_delta(repo_path, baseline_project, roll=roll)
+    except (KeyError, OSError, RuntimeError, ValueError, PipelineError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"{len(result['new_commits'])} new commits, {len(result['new_signals'])} new signals"
+    )
+    click.echo(f"Delta report: {output}")
+
+
+@main.command()
 @click.argument("project_name")
 @click.option("--sessions-dir", help="Directory containing .jsonl session files")
+@click.option("--since", help="Include files modified since this ISO 8601 timestamp with offset")
 @click.option("--verbose", "-v", is_flag=True)
-def extract_sessions(project_name, sessions_dir, verbose):
+def extract_sessions(project_name, sessions_dir, since, verbose):
     """Extract Claude Code session data."""
     project_dir = _project_dir(project_name)
     output_path = os.path.join(project_dir, "data", "raw-sessions.md")
 
     cmd = [sys.executable, "-m", "archaeology.extractors.sessions", "--output", output_path]
     if sessions_dir:
-        cmd.extend(["--sessions-dir", sessions_dir])
+        cmd.append(f"--sessions-dir={sessions_dir}")
+    if since is not None:
+        cmd.append(f"--since={since}")
     cmd.extend(["--project", project_name])
 
-    result = subprocess.run(cmd, check=True, timeout=300)
+    try:
+        result = subprocess.run(cmd, check=False, timeout=300)
+    except subprocess.TimeoutExpired as exc:
+        raise click.ClickException("Session extraction timed out after 300 seconds") from exc
     if result.returncode == 0:
         click.echo(f"Sessions extracted to {output_path}")
     else:

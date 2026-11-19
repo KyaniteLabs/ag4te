@@ -198,7 +198,9 @@ def start(body: dict = Body(...)):
     p = _plugin()
     repo, project = body.get("repo"), body.get("project") or None
     try:
-        return p.start_dig(repo, project, resume=bool(body.get("resume")))
+        return p.start_dig(
+            repo, project, resume=bool(body.get("resume")), delta=body.get("delta") is True
+        )
     except p.DigError as exc:
         _bad(exc, 409 if isinstance(exc, p.DigBusyError) else 400)
 
