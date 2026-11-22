@@ -5,6 +5,12 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      # One pull request (one CI run) for all minor and patch updates;
+      # majors still arrive one at a time.
+      python-minor-patch:
+        update-types: ["minor", "patch"]
     labels:
       - "dependencies"
       - "python"
@@ -16,6 +22,11 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      # Action bumps are pin updates that CI exercises together.
+      github-actions:
+        patterns: ["*"]
     labels:
       - "dependencies"
       - "ci"
