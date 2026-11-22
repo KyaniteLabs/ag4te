@@ -5,10 +5,57 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  schedule:
+    # Weekly full matrix: macOS 3.10/3.11 (light on pull requests) and drift in
+    # unpinned dependencies on every OS.
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to a pull request cancels its superseded run; main runs are never cancelled.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  hermes-plugin:
+  plan:
+    # Decides which legs run in full. See .github/scripts/ci_plan.py: every
+    # required check still reports; on any doubt it runs everything.
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+    - name: Checkout the CI scripts
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      with:
+        persist-credentials: false
+        sparse-checkout: .github/scripts
+
+    - name: Plan
+      id: plan
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        EVENT: ${{ github.event_name }}
+        REPOSITORY: ${{ github.repository }}
+        SHA: ${{ github.sha }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        set -o pipefail
+        python3 .github/scripts/ci_plan.py --event "$EVENT" --repository "$REPOSITORY" --sha "$SHA" ${PR:+--pr "$PR"} | tee -a "$GITHUB_OUTPUT"
+
+  hermes-plugin:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
     - name: Checkout plugin repository
       uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -19,24 +66,29 @@ jobs:
       uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       with:
         repository: NousResearch/hermes-agent
-        ref: 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19
+        ref: 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19  # v0.23.0
         path: .hermes-runtime
         persist-credentials: false
 
     - name: Set up Python 3.14
-      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
         python-version: '3.14'
 
     - name: Set up Node.js for plugin checks
-      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: '22'
 
     - name: Install uv
-      uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      with:
+        version: '0.11.13'
+        enable-cache: true
+        cache-dependency-glob: .hermes-runtime/uv.lock
 
     - name: Install Hermes from its lockfile
+      id: hermes
       run: uv sync --frozen --python 3.14 --directory .hermes-runtime
 
     - name: Install test runner
@@ -48,40 +100,76 @@ jobs:
         env -u HERMES_HOME HOME="$RUNNER_TEMP/ag4te-hermes-home" AG4TE_HERMES_SOURCE="$GITHUB_WORKSPACE/.hermes-runtime" .hermes-runtime/.venv/bin/python -m pytest plugins/ag4te-hermes/tests -q --tb=short -rs 2>&1 | tee hermes-plugin-tests.log
         if grep -Eq '[0-9]+ skipped' hermes-plugin-tests.log; then echo "::error::plugin tests were skipped"; exit 1; fi
 
+    # Formerly its own workflow (plugin-validate.yml), which installed the same
+    # Hermes runtime again on a second machine.
+    - name: Real plugin validator (no credentials)
+      if: ${{ !cancelled() && steps.hermes.outcome == 'success' }}
+      run: |
+        mkdir -p receipts
+        HERMES_HOME="$RUNNER_TEMP/hermes-home" .hermes-runtime/.venv/bin/hermes plugins validate plugins/ag4te-hermes --json > receipts/validate.json
+        cat receipts/validate.json
+        python3 -c 'import json,sys; d=json.load(open("receipts/validate.json")); sys.exit(0 if d.get("ok") is True else "validator did not report ok: true")'
+
+    - name: Retain the validator receipt
+      if: ${{ !cancelled() && steps.hermes.outcome == 'success' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: plugin-validation
+        path: receipts/
+
   test:
-    runs-on: ${{ matrix.os }}
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    # The name is the required check; a light leg keeps it but runs on Linux.
+    name: test (${{ matrix.os }}, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ['3.10', '3.11', '3.12']
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
+    - name: Light leg (nothing for this OS and Python to prove)
+      if: ${{ matrix.light }}
+      env:
+        WHY: ${{ matrix.why }}
+      run: |
+        echo "::notice::test (${{ matrix.os }}, ${{ matrix.python-version }}) ran light: $WHY"
+        echo "Light leg: $WHY" >> "$GITHUB_STEP_SUMMARY"
+
     - name: Checkout
+      if: ${{ !matrix.light }}
       uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       with:
         persist-credentials: false
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      if: ${{ !matrix.light }}
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
         python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+        cache-dependency-path: setup.py
 
     - name: Install dependencies
+      if: ${{ !matrix.light }}
       run: |
         python -m pip install pip==26.2.2
         pip install -e ".[dev]"
 
     - name: Run tests
+      if: ${{ !matrix.light }}
       run: |
         pytest -v
 
     - name: Run demo (basic smoke test)
+      if: ${{ !matrix.light }}
       run: |
         devarch demo --force --build-db
 
     - name: Install and verify built wheel outside checkout
-      if: matrix.python-version == '3.12'
+      if: ${{ !matrix.light && matrix.python-version == '3.12' }}
       run: |
         python -m pip install build==1.6.1 twine==7.0.0
         python -m build
@@ -91,7 +179,10 @@ jobs:
         python scripts/check_installed_wheel.py
 
   lint:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
     - name: Checkout
       uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -99,9 +190,11 @@ jobs:
         persist-credentials: false
 
     - name: Set up Python
-      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
         python-version: '3.11'
+        cache: 'pip'
+        cache-dependency-path: setup.py
 
     - name: Install dependencies
       run: |

@@ -1,5 +1,5 @@
 name: Mutation
-# Advisory Layer 2 lane: measures whether the tests actually detect injected
+# Advisory Layer 2 lane (weekly; the era subsystem changes rarely): measures whether the tests actually detect injected
 # defects in the era subsystem (archaeology/era_mapper.py, era_scanner.py,
 # era_cascade.py). Not a required check (~6 min clean, slower under runner
 # contention); the run goes red if the mutation score drops below 80%
@@ -11,7 +11,7 @@ name: Mutation
 # Python 3.12 arrives via the same uv bootstrap the profile uses.
 on:
   schedule:
-    - cron: "07 2 * * *"
+    - cron: "07 2 * * 1"
   workflow_dispatch:
 
 permissions:
