@@ -167,6 +167,7 @@ def test_cli_error_prefix_is_not_duplicated(tmp_path, monkeypatch):
 def test_default_scope_uses_project_repo_and_all_projects_is_explicit(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser reads this on Windows
     project = tmp_path / "projects/demo"
     (project / "data").mkdir(parents=True)
     (project / "project.json").write_text(json.dumps({"repo_path": "/work/my.repo"}))
@@ -184,6 +185,7 @@ def test_default_scope_uses_project_repo_and_all_projects_is_explicit(tmp_path, 
 def test_default_scope_requires_repo_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser reads this on Windows
     (tmp_path / "projects/demo/data").mkdir(parents=True)
     _session(tmp_path / ".claude/projects/-other/two.jsonl")
     result = CliRunner().invoke(cli.main, ["extract-sessions", "demo"])
@@ -204,6 +206,7 @@ def test_default_scope_requires_repo_path(tmp_path, monkeypatch):
 def test_default_scope_matches_claude_code_folder_names(tmp_path, monkeypatch, repo, slug):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser reads this on Windows
     project = tmp_path / "projects/demo"
     (project / "data").mkdir(parents=True)
     (project / "project.json").write_text(json.dumps({"repo_path": repo}))
@@ -216,6 +219,7 @@ def test_default_scope_matches_claude_code_folder_names(tmp_path, monkeypatch, r
 def test_default_scope_finds_hashed_folder_for_long_repo_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser reads this on Windows
     project = tmp_path / "projects/demo"
     (project / "data").mkdir(parents=True)
     repo = "/w/" + "d" * 250

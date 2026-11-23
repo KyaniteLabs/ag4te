@@ -1079,13 +1079,17 @@ def test_mining_does_not_run_repository_configured_signature_programs(tmp_path, 
         + "\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n -----END PGP SIGNATURE-----\n\n"
         + body
     )
-    sha = subprocess.run(
-        ["git", "-C", str(repo), "hash-object", "-t", "commit", "-w", "--stdin"],
-        input=signed,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    # Bytes, not text: text-mode pipes turn \n into \r\n on Windows and corrupt the object.
+    sha = (
+        subprocess.run(
+            ["git", "-C", str(repo), "hash-object", "-t", "commit", "-w", "--stdin"],
+            input=signed.encode(),
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode()
+        .strip()
+    )
     subprocess.run(["git", "-C", str(repo), "update-ref", "refs/heads/signed", sha], check=True)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1103,14 +1107,18 @@ def test_mining_accepts_out_of_range_timezone_offsets(tmp_path):
     env = {**os.environ, **GIT_ENV}
 
     def git(*args, stdin=None):
-        return subprocess.run(
-            ["git", "-C", str(repo), *args],
-            check=True,
-            env=env,
-            capture_output=True,
-            text=True,
-            input=stdin,
-        ).stdout.strip()
+        # Bytes, not text: text-mode pipes turn \n into \r\n on Windows and corrupt the object.
+        return (
+            subprocess.run(
+                ["git", "-C", str(repo), *args],
+                check=True,
+                env=env,
+                capture_output=True,
+                input=stdin.encode() if stdin is not None else None,
+            )
+            .stdout.decode()
+            .strip()
+        )
 
     tree = git("rev-parse", "HEAD^{tree}")
     parent = git("rev-parse", "HEAD")
