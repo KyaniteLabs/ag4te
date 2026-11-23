@@ -1080,12 +1080,12 @@ function Digger({ ctx, repos, reposFault, onStarted, onBusyElsewhere, busy }) {
   const [err, setErr] = useState('')
   const [posting, setPosting] = useState(false)
   const sel = useRef(null)
-  const go = () => {
+  const go = delta => {
     if (posting) return
     if (!repo) { setErr('Pick a repo first.'); if (sel.current) sel.current.focus(); return }
     setErr('')
     setPosting(true)
-    ctx.rest('/dig', { method: 'POST', body: { repo } })
+    ctx.rest('/dig', { method: 'POST', body: { repo, delta } })
       .then(r => onStarted(r && r.project))
       .catch(e => {
         const m = String((e && e.message) || e)
@@ -1100,8 +1100,28 @@ function Digger({ ctx, repos, reposFault, onStarted, onBusyElsewhere, busy }) {
     h('select', { ref: sel, className: 'ag-select', value: repo, 'aria-label': 'Repository to dig', onChange: e => { setRepo(e.target.value); setErr('') }, disabled: !repos.length || busy },
       h('option', { value: '' }, repos.length ? 'Dig a repo…' : reposFault ? 'Listing repos… (retrying)' : 'No repos under your roots'),
       repos.map(r => h('option', { key: r.path, value: r.path, title: r.path }, r.name))),
-    h('button', { type: 'button', className: 'ag-btn pri', disabled: busy || !repos.length, onClick: go }, busy ? 'Digging…' : 'Dig'),
+    h('button', { type: 'button', className: 'ag-btn pri', disabled: busy || !repos.length, onClick: () => go(false) }, busy ? 'Digging…' : 'Dig'),
+    h('button', { type: 'button', className: 'ag-btn', disabled: busy || !repos.length, onClick: () => go(true) }, 'Dig what’s new'),
     err ? h('span', { className: 'ag-muted ag-err', role: 'alert' }, err) : null)
+}
+
+function DeltaPanel({ delta }) {
+  const [limit, setLimit] = useState(PAGE)
+  if (delta.seeded) return h('section', { className: 'ag-card' },
+    h('h3', null, 'Baseline saved'), h('p', null, 'The next delta dig will show what changed since this dig.'))
+  const counts = delta.commit_counts
+  const commits = delta.new_commits
+  const signals = delta.new_signals
+  return h('section', { className: 'ag-card' },
+    h('h3', null, 'What changed since the last dig'),
+    h('p', null, `${num(counts.code)} code commits · ${num(counts.merge)} merges · ${num(signals.length)} new signals`),
+    h('p', { className: 'ag-muted' }, delta.era_boundaries_changed ? 'Era boundaries changed.' : 'Era boundaries stayed the same.'),
+    commits.length ? h('details', null, h('summary', null, 'New commits'),
+      h('ul', null, commits.slice(0, limit).map(c => h('li', { key: c.hash },
+        `${c.kind}${c.scope ? ` (${c.scope})` : ''}: ${c.subject}`))),
+      commits.length > limit ? h('button', { type: 'button', className: 'ag-btn', onClick: () => setLimit(n => n + PAGE) }, 'Show more commits') : null) : null,
+    signals.length ? h('details', null, h('summary', null, 'New signals'),
+      h('ul', null, signals.map((s, i) => h('li', { key: i }, `${s.date || ''} ${s.type}: ${s.detail || ''}`)))) : null)
 }
 
 // A running dig lays down one deposit band per step; the current band pulses.
@@ -1372,6 +1392,7 @@ function Page({ ctx }) {
       runningProject ? h(Progress, { st: run && run.project === runningProject ? run : { state: 'running', project: runningProject, label: 'Checking…' }, pal, onStop: stop }) : null,
       stalled && dismissed !== `${stalled.project}:${stalled.state}` ? h(Stalled, { st: stalled, onResume: resume, onDismiss: () => setDismissed(`${stalled.project}:${stalled.state}`) }) : null,
       run && run.state === 'done' && (run.warnings || []).length ? h('p', { className: 'ag-muted' }, `Finished with notes: ${run.warnings.join(' · ')}`) : null,
+      dig && dig.delta ? h(DeltaPanel, { key: `${dig.project}:${dig.generated_at}`, delta: dig.delta }) : null,
       body))
 }
 

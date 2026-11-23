@@ -43,6 +43,22 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
 const project = p => ({ project: p, has_dig: true, commit_count: 1 })
 const storage = { get: () => 'old', set: () => {} }
 
+test('Dig what’s new starts a delta dig for the selected repository', async () => {
+  const calls = []
+  const digger = mount('Digger', {
+    ctx: { rest: (url, options) => { calls.push([url, options]); return Promise.resolve({ project: 'example' }) } },
+    repos: [{ path: '/repos/example', name: 'example' }], onStarted: () => {}, onBusyElsewhere: () => {},
+  })
+  nodes(digger.tree).find(n => n.type === 'select').props.onChange({ target: { value: '/repos/example' } })
+  digger.render()
+  nodes(digger.tree).find(n => n.props?.children === 'Dig what’s new').props.onClick()
+  await digger.flush()
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][0], '/dig')
+  assert.equal(calls[0][1].body.repo, '/repos/example')
+  assert.equal(calls[0][1].body.delta, true)
+})
+
 test('live dig selection wins over an in-flight project list', async () => {
   const oldList = deferred()
   let lists = 0

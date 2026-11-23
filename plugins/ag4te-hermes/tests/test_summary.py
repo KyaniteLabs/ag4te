@@ -264,6 +264,58 @@ def test_devarch_failure_is_optional(tmp_path):
     assert ag.load_dig("r", s)["commit_count"] == 3
 
 
+def test_whats_new_rolls_after_a_successful_dig(tmp_path):
+    repo = tmp_path / "repo"
+    git_repo(repo)
+    settings = {
+        "repo_roots": str(tmp_path),
+        "data_dir": str(tmp_path / "state"),
+        "time_zone": "UTC",
+    }
+
+    signals = []
+
+    def runner(args, _settings):
+        if args[0] == "signals":
+            ag._write_json(
+                ag.project_dir("repo", _settings) / "data" / "detected-signals.json",
+                {"signals": signals},
+            )
+        return {"ok": True}
+
+    assert ag.run_dig(repo, "repo", settings, runner=runner)["state"] == "done"
+    previous = ag.load_dig("repo", settings)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "--allow-empty", "-qm", "feat(desktop): show deltas"],
+        check=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "Fixture",
+            "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+            "GIT_COMMITTER_NAME": "Fixture",
+            "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+        },
+    )
+    signals.append(
+        {"date": "2026-10-03", "type": "gap", "detail": "30-day gap", "strength": "strong"}
+    )
+    failed = ag.run_dig(
+        repo, "repo", settings, delta=True, runner=lambda a, s: {"ok": a[0] != "signals"}
+    )
+    assert failed["state"] == "failed"
+    assert ag.load_dig("repo", settings) == previous
+
+    assert ag.run_dig(repo, "repo", settings, runner=runner, delta=True)["state"] == "done"
+    report = ag.load_dig("repo", settings)["delta"]
+    assert report["commit_counts"] == {"code": 1, "merge": 0}
+    assert report["new_commits"][0]["scope"] == "desktop"
+    assert report["new_commits"][0]["subject"] == "feat(desktop): show deltas"
+    assert report["new_signals"] == signals
+    assert ag.run_dig(repo, "repo", settings, runner=runner, delta=True)["state"] == "done"
+    unchanged = ag.load_dig("repo", settings)["delta"]
+    assert unchanged["new_commits"] == unchanged["new_signals"] == []
+
+
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="plugin runs under the Hermes gateway on POSIX: shlex commands, process groups",

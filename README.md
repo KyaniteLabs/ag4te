@@ -129,6 +129,12 @@ devarch audit my-project
 devarch audit my-project --fail-on MEDIUM
 ```
 
+## See what changed since the last dig
+
+Run `devarch dig /path/to/repo --delta my-project --roll` to use a completed mine as a baseline or save your first baseline. Subsequent runs report new and merge commits, new signals, and changes to the measured era boundaries in `projects/my-project/data/latest.json`. Omit `--roll` to compare repeatedly against the same baseline. A successful rolling dig advances the baseline without overwriting the original mining artifacts.
+
+Use `devarch extract-sessions my-project --sessions-dir /path/to/sessions --since 2025-01-01T00:00:00Z` to extract only session files modified at or after a timestamp.
+
 ## CLI Commands
 
 ### Project Management
@@ -137,12 +143,13 @@ devarch audit my-project --fail-on MEDIUM
 
 ### Data Extraction
 - `devarch mine <repo-path> --project <name>` -- Extract git history
+- `devarch dig <repo-path> --delta <name> [--roll]` -- Compare against a local baseline
 - `devarch build-db <project>` -- Build SQLite database from mined data
 - `devarch ingest-pipeline <project> --logs-dir <path>` -- Ingest GitHub Actions logs
 
 ### Signal Detection
 - `devarch signals <project> [--config] [--min-gap-days]` -- Run signal detection heuristics
-- `devarch extract-sessions <project> --sessions-dir <path>` -- Extract coding sessions
+- `devarch extract-sessions <project> --sessions-dir <path> [--since <timestamp>]` -- Extract coding sessions
 
 ### Analysis
 - `devarch analyze <project> [--vector] [--prompts]` -- Run analysis vectors
