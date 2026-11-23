@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.1] - Unreleased readiness candidate
 
+- Apply Git mailmaps and configured author aliases, classify raw identities, and debounce human, bot and agent handoffs (#77). Commit dates come from epoch seconds, so out-of-range timezone offsets in old history no longer break mining. Sync uses the selected profile; mining disables signature programs and external diff/text conversion for Git logs.
+
+- Scope default session extraction to the configured repository, with `--all-projects` as an opt-in; fix leading-dash option values and duplicate error prefixes (#75).
+- Filter harness blocks in linear time, including a truncated block that opens a message, and identify SDK and subagent messages in extracted narratives (#76). Unknown entrypoints stay human, `--include-subagents` keeps subagent sidechain content, and malformed entries are counted separately. An unclosed tag no longer shields later harness blocks, prose that starts with an unrelated tag such as `<command-line>` is kept, and blank lines are not counted as malformed.
+
+- Discover nested Claude Code sessions, with optional project and subagent filters (#75). Default discovery follows Claude Code's folder naming, including long hashed paths.
+
+- Apply documented sync settings and warn when profiles use deprecated or unknown keys (#73). Mistyped setting values fail before anything is written.
+
+- Continue syncing healthy projects after a failure, report the cause and return a failing exit status (#72). A repository with no commits yet is skipped, not failed; a missing repository still fails the run. When any project fails, sync says which projects `global/` reflects. Sync and cascade mine through the same checks as `mine`: shallow clones are refused and the coverage manifest is rebound to the newly mined bytes.
+
+- Accept bare Git mirrors in sync and pipeline mining while preserving errors for corrupt checkouts (#71). Mining ignores an inherited `GIT_DIR` or other Git location variables, and `mine` and sync name the enclosing repository when pointed at a subfolder. Repository paths that are not valid UTF-8 are compared exactly.
+
 - AG4TE Hermes plugin 0.3.0: agent dig reads and progress refresh the open Desktop page through local events; `ag4te_show` points it at a section or item, with live events taking priority over pending REST responses (Forgejo #53).
 - Stop the AG4TE plugin's dig lease from sending Ctrl-C on Windows. It checked whether a lease owner was alive with `os.kill(pid, 0)`, which on Windows is `CTRL_C_EVENT` to the whole console group, so it interrupted Hermes itself. It now asks Windows with `OpenProcess`/`GetExitCodeProcess`.
 - Harden the AG4TE Hermes plugin after review: chat platforms (and any platform not known as local) can no longer stop a dig, and get summaries without paths, error text or author names; one dig at a time now holds across Hermes processes through a workspace lease; two repositories with the same folder name no longer share a project; a small era beside a large one keeps a 3px band in the stone; the layout regression runs on a sanitized fixture instead of host data; tests no longer name real people; the plugin pins DevArch to the catalog-reviewed commit (`d884f9a`).

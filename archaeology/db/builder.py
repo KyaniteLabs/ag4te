@@ -149,6 +149,15 @@ class SqliteUtilsError(RuntimeError):
     """
 
 
+def sqlite_utils_missing_message() -> str:
+    return (
+        f"sqlite-utils is not installed for this interpreter ({sys.executable}). "
+        "Install it with `pip install -e .` (it is a declared dependency) or "
+        "`pip install sqlite-utils`. Without it build-db cannot populate any "
+        "table, so every analysis vector silently returns zero."
+    )
+
+
 def run_su(args: list[str], verbose: bool = False) -> subprocess.CompletedProcess:
     """Call sqlite-utils CLI and return the result.
 
@@ -162,12 +171,7 @@ def run_su(args: list[str], verbose: bool = False) -> subprocess.CompletedProces
     if result.returncode != 0:
         stderr = result.stderr.strip()
         if "No module named sqlite_utils" in stderr:
-            raise SqliteUtilsError(
-                f"sqlite-utils is not installed for this interpreter ({sys.executable}). "
-                "Install it with `pip install -e .` (it is a declared dependency) or "
-                "`pip install sqlite-utils`. Without it build-db cannot populate any "
-                "table, so every analysis vector silently returns zero."
-            )
+            raise SqliteUtilsError(sqlite_utils_missing_message())
         raise SqliteUtilsError(f"sqlite-utils {args[0] if args else ''} failed: {stderr}")
     return result
 
