@@ -1,6 +1,7 @@
 """Regression tests for session discovery."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -171,7 +172,11 @@ def test_default_scope_uses_project_repo_and_all_projects_is_explicit(tmp_path, 
     project = tmp_path / "projects/demo"
     (project / "data").mkdir(parents=True)
     (project / "project.json").write_text(json.dumps({"repo_path": "/work/my.repo"}))
-    _session(tmp_path / ".claude/projects/-work-my-repo/one.jsonl")
+    from archaeology.extractors.sessions import claude_project_slug
+
+    # Folder name for this platform's absolute form of the path (Windows adds the drive: C--work-my-repo).
+    slug = claude_project_slug(os.path.abspath("/work/my.repo"))
+    _session(tmp_path / f".claude/projects/{slug}/one.jsonl")
     _session(tmp_path / ".claude/projects/-other/two.jsonl")
     runner = CliRunner()
     result = runner.invoke(cli.main, ["extract-sessions", "demo"])
@@ -194,6 +199,9 @@ def test_default_scope_requires_repo_path(tmp_path, monkeypatch):
     assert not (tmp_path / "projects/demo/data/raw-sessions.md").exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="golden Claude Code folder names for POSIX repo paths"
+)
 @pytest.mark.parametrize(
     ("repo", "slug"),
     [
@@ -216,6 +224,9 @@ def test_default_scope_matches_claude_code_folder_names(tmp_path, monkeypatch, r
     assert "Extracted from 1" in (project / "data/raw-sessions.md").read_text()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="golden Claude Code folder names for POSIX repo paths"
+)
 def test_default_scope_finds_hashed_folder_for_long_repo_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
