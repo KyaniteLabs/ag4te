@@ -769,7 +769,7 @@
         "project": "bare"
       },
       "exit_code": 1,
-      "output": "Error: git rev-parse failed: fatal: not a git repository (or any of the parent directories): .git\n",
+      "output": "Error: Not a git repository: <TMP>/plain\n",
       "stdout": "",
       "stderr": ""
     },

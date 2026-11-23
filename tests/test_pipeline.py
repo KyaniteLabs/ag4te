@@ -178,7 +178,7 @@ def test_mine_extracts_commits_and_reports_stages(ws, repo):
     events = []
     result = pipeline.mine(str(repo), ref, on_event=lambda e, d: events.append((e, d)))
     assert result.commits == 5
-    assert events == [("start", None), ("csv-done", 5)]
+    assert events == [("start", None), ("csv-done", 5), ("stats-done", None)]
     assert Path(result.csv_path).read_text(encoding="utf-8").count("\n") == 6  # header + 5
     assert Path(result.stats_path).exists()
 
