@@ -102,3 +102,16 @@ Thumbs.db
 # Analysis outputs (keep source, ignore generated)
 projects/*/output/
 !projects/*/output/.gitkeep
+.ci-results/
+.hermes-runtime/
+.ci-hermes-home/
+.ci-contract/
+.ci-results-main/
+.venv/
+
+# Mutation testing (mutmut)
+mutants/
+
+# Stage working artifacts (ICM L4) are generated locally, never committed.
+stages/*/output/*
+!stages/*/output/.gitkeep

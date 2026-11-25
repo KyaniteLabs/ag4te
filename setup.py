@@ -15,7 +15,13 @@ setup(
         "datasette>=0.64.0",
     ],
     extras_require={
-        "dev": ["pytest>=8.0", "ruff==0.16.10"],
+        "dev": [
+            "pytest>=8.0",
+            "ruff==0.16.10",
+            "hypothesis>=6.100",
+            "fastapi>=0.110",
+            "httpx>=0.27",
+        ],
         "mcp": ["mcp[cli]>=1.0,<2"],
     },
     entry_points={
@@ -34,7 +40,7 @@ setup(
     description="Forensic archaeology framework for git repositories",
     long_description=README,
     long_description_content_type="text/markdown",
-    url="https://github.com/KyaniteLabs/devarch-framework",
+    url="https://github.com/KyaniteLabs/ag4te",
     author="Simon Gonzalez De Cruz",
     author_email="simon@puenteworks.com",
     license="Apache-2.0",

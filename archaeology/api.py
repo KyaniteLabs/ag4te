@@ -16,20 +16,22 @@ Endpoints:
 import json
 import re
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
+
+from archaeology import __version__
 
 ROOT = Path(__file__).resolve().parents[1]  # dev-archaeology/
 PROJECTS_DIR = ROOT / "projects"
 BRIDGE_PATH = ROOT / "global" / "data" / "factory-bridge.json"
 
-__version__ = "1.0.0"
-
 
 def _validate_project_name(name):
     """Reject path traversal and invalid characters in project names."""
-    if not name or not re.match(r"^[a-zA-Z0-9._-]+$", name):
+    # fullmatch, not ^...$: "$" also matches before a trailing newline.
+    if not name or not re.fullmatch(r"[a-zA-Z0-9._-]+", name):
         return False
     # Double-check no path traversal
     resolved = (PROJECTS_DIR / name).resolve()
@@ -151,13 +153,10 @@ def _parse_swot(project_dir):
         section = sections.get(key, "")
         result[key.lower()] = _parse_list_items(section)
 
-    # Extract matrix counts
-    matrix_text = sections.get("header", "")
+    # The generator's matrix counts are the lengths of these same lists
+    # (scripts/data/generate_template_deliverables.py, SWOT Matrix block).
     for quadrant in ("strengths", "weaknesses", "opportunities", "threats"):
-        pattern = rf"{quadrant}.*?(\d+)\s+found"
-        m = re.search(pattern, matrix_text, re.IGNORECASE)
-        if m:
-            result.setdefault(f"{quadrant}_count", int(m.group(1)))
+        result[f"{quadrant}_count"] = len(result[quadrant])
 
     return result
 
@@ -300,7 +299,6 @@ def _parse_bcg(project_dir):
 
     for quadrant_key in ("Stars", "Cash Cows", "Question Marks", "Dogs"):
         section = sections.get(f"{quadrant_key}", "")
-        _count_match = re.search(r"\((\d+)\)", sections.get("Quadrant Analysis", ""))
         result[quadrant_key.lower().replace(" ", "_")] = _parse_list_items(section)
 
     result["recommendations"] = _parse_list_items(sections.get("Strategic Recommendations", ""))
@@ -385,7 +383,7 @@ def _get_pipeline_status(project_dir):
     if not db_path.exists():
         return None
     try:
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT run_timestamp, status FROM pipeline_runs "
@@ -587,7 +585,7 @@ def handle_health_trend(handler, project_name):
     if not db_path.exists():
         return _error_response(handler, f"No database for '{project_name}'")
     try:
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT r.run_timestamp, r.status, pr.issues_count, pr.fixes_applied "

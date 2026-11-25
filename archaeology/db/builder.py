@@ -4,7 +4,7 @@
 Project-agnostic: point --project <name> or --project-root <path> at any project
 directory with a data/ folder and this script auto-detects CSV and JSON files,
 flattens nested structures into separate tables, creates indexes, and enables
-FTS5 for full-text search.
+FTS4 for full-text search (sqlite-utils --fts4).
 
 Table registry is loaded from:
   1. <project-root>/project.json -> "db_tables" key
@@ -149,6 +149,15 @@ class SqliteUtilsError(RuntimeError):
     """
 
 
+def sqlite_utils_missing_message() -> str:
+    return (
+        f"sqlite-utils is not installed for this interpreter ({sys.executable}). "
+        "Install it with `pip install -e .` (it is a declared dependency) or "
+        "`pip install sqlite-utils`. Without it build-db cannot populate any "
+        "table, so every analysis vector silently returns zero."
+    )
+
+
 def run_su(args: list[str], verbose: bool = False) -> subprocess.CompletedProcess:
     """Call sqlite-utils CLI and return the result.
 
@@ -162,12 +171,7 @@ def run_su(args: list[str], verbose: bool = False) -> subprocess.CompletedProces
     if result.returncode != 0:
         stderr = result.stderr.strip()
         if "No module named sqlite_utils" in stderr:
-            raise SqliteUtilsError(
-                f"sqlite-utils is not installed for this interpreter ({sys.executable}). "
-                "Install it with `pip install -e .` (it is a declared dependency) or "
-                "`pip install sqlite-utils`. Without it build-db cannot populate any "
-                "table, so every analysis vector silently returns zero."
-            )
+            raise SqliteUtilsError(sqlite_utils_missing_message())
         raise SqliteUtilsError(f"sqlite-utils {args[0] if args else ''} failed: {stderr}")
     return result
 
@@ -192,8 +196,17 @@ def import_csv(db: Path, table: str, csv_path: Path, verbose: bool = False) -> i
         return 0
     # Count rows during initial read to avoid re-reading the file
     with open(csv_path, encoding="utf-8") as f:
-        count = sum(1 for _ in csv.reader(f)) - 1
-    run_su(["insert", str(db), table, str(csv_path), "--csv", "--alter"], verbose)
+        reader = csv.reader(f)
+        header = next(reader, [])
+        count = sum(1 for _ in reader)
+    args = ["insert", str(db), table, str(csv_path), "--csv", "--alter"]
+    if table == "commits" and "hash" in header:
+        # Key commits by (repo, hash) so a re-import or a repeated row replaces
+        # instead of duplicating; the same hash can live in two repos (forks).
+        for col in ["repo", "hash"] if "repo" in header else ["hash"]:
+            args += ["--pk", col]
+        args.append("--replace")
+    run_su(args, verbose)
     log(f"IMPORTED {csv_path.name} -> {table} ({count} rows)", verbose)
     return max(count, 0)
 
@@ -499,7 +512,7 @@ def import_from_registry(
 
 def _validate_table_name(table: str) -> str:
     """Reject table names that could enable SQL injection."""
-    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", table):
+    if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", table):  # "$" would allow a trailing newline
         raise ValueError(f"Invalid table name: {table!r}")
     return table
 

@@ -118,8 +118,9 @@ def test_extract_sessions_invokes_subprocess(tmp_path, monkeypatch):
 
     with patch("subprocess.run", side_effect=fake_run):
         runner = CliRunner()
-        _result = runner.invoke(main, ["extract-sessions", "sess-proj"])
+        result = runner.invoke(main, ["extract-sessions", "sess-proj"])
 
+    assert result.exit_code == 0, result.output
     assert any("archaeology.extractors.sessions" in " ".join(c) for c in calls)
 
 

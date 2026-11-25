@@ -1,15 +1,34 @@
 """Git log extraction for archaeology pipeline."""
 
 import csv
+import os
 import subprocess
 from pathlib import Path
 
+# What `git rev-parse --local-env-vars` lists, minus the config-injection
+# variables (GIT_CONFIG*), which callers use on purpose (e.g. safe.directory in
+# CI). Inherited, any of these makes git read a repository other than -C's.
+_REPO_LOCAL_ENV = frozenset(
+    (
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES "
+        "GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE "
+        "GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX "
+        "GIT_SHALLOW_FILE GIT_COMMON_DIR"
+    ).split()
+)
 
-def _git(repo_path: str, *args: str) -> str:
+
+def git_env() -> dict[str, str]:
+    """The caller's environment without variables that redirect git elsewhere."""
+    return {k: v for k, v in os.environ.items() if k not in _REPO_LOCAL_ENV}
+
+
+def _git(repo_path: str, *args: str, missing_ok: bool = False) -> str:
     """Read Git metadata without invoking a shell or repository hooks."""
     try:
         result = subprocess.run(
             ["git", "-C", str(Path(repo_path).expanduser()), *args],
+            env=git_env(),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -20,9 +39,15 @@ def _git(repo_path: str, *args: str) -> str:
         raise RuntimeError("git binary not found. Install git and ensure it's on PATH.") from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("git read timed out after 300s") from exc
-    if result.returncode:
+    if result.returncode and not (missing_ok and not result.stderr.strip()):
         raise RuntimeError(f"git {args[0]} failed: {result.stderr.strip()}")
-    return result.stdout
+    return "" if result.returncode else result.stdout
+
+
+def _head(repo_path: str) -> str | None:
+    """HEAD's commit, or None when HEAD names an unborn branch (other refs may exist)."""
+    out = _git(repo_path, "rev-parse", "--verify", "--quiet", "HEAD^{commit}", missing_ok=True)
+    return out.strip() or None
 
 
 def repository_coverage(repo_path: str) -> dict:
@@ -31,7 +56,7 @@ def repository_coverage(repo_path: str) -> dict:
     refs = _git(repo_path, "for-each-ref", "--format=%(refname)%09%(objectname)")
     count = int(_git(repo_path, "rev-list", "--all", "--count").strip())
     return {
-        "head": _git(repo_path, "rev-parse", "--verify", "HEAD").strip() if count else None,
+        "head": _head(repo_path) if count else None,
         "scope": "all locally available refs plus HEAD; no automatic remote fetch",
         "shallow": _git(repo_path, "rev-parse", "--is-shallow-repository").strip() == "true",
         "bare": _git(repo_path, "rev-parse", "--is-bare-repository").strip() == "true",
@@ -56,22 +81,34 @@ def extract_git_log(repo_path: str, output_path: str, verbose: bool = False) -> 
 
     from ..utils import atomic_write
 
-    raw = _git(repo_path, "log", "-z", "--all", "--format=%H%x00%aI%x00%s%x00%an")
+    raw = _git(
+        repo_path,
+        "log",
+        "--no-show-signature",
+        "--use-mailmap",
+        "-z",
+        "--all",
+        "--format=%H%x00%at%x00%s%x00%aN%x00%aE%x00%P%x00%an%x00%ae",
+    )
     fields = raw.split("\0")
     if fields[-1] == "":
         fields.pop()
-    if len(fields) % 4:
+    if len(fields) % 8:
         raise RuntimeError("Malformed Git extraction; refusing partial history")
     stream = io.StringIO(newline="")
     writer = csv.writer(stream, lineterminator="\n")
-    writer.writerow(["hash", "date", "message", "author"])
-    for i in range(0, len(fields), 4):
-        sha, date, subject, author = fields[i : i + 4]
-        normalized = (
-            datetime.fromisoformat(date.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
-        )
-        writer.writerow([sha, normalized, subject, author])
-    count = len(fields) // 4
+    # email and parents identify people across name spellings and mark
+    # merges (more than one parent); older readers ignore extra columns.
+    writer.writerow(
+        ["hash", "date", "message", "author", "email", "parents", "raw_author", "raw_email"]
+    )
+    for i in range(0, len(fields), 8):
+        sha, date, subject, author, email, parents, raw_author, raw_email = fields[i : i + 8]
+        # Epoch seconds, not %aI: old commits can carry offsets such as +2500
+        # that git records but Python's ISO parser rejects.
+        normalized = datetime.fromtimestamp(int(date), timezone.utc).isoformat()
+        writer.writerow([sha, normalized, subject, author, email, parents, raw_author, raw_email])
+    count = len(fields) // 8
     expected = int(_git(repo_path, "rev-list", "--all", "--count").strip())
     if count != expected:
         raise RuntimeError("Repository changed during extraction; retry against frozen refs")
@@ -83,10 +120,28 @@ def extract_git_log(repo_path: str, output_path: str, verbose: bool = False) -> 
 
 def extract_git_log_with_stats(repo_path: str, output_path: str, verbose: bool = False) -> int:
     """Extract git log with file change stats."""
-    cmd = ["git", "-C", repo_path, "log", "--format=%H%x1f%ai%x1f%s%x1f%an", "--shortstat", "--all"]
+    cmd = [
+        "git",
+        "-C",
+        repo_path,
+        "log",
+        "--no-show-signature",
+        "--use-mailmap",
+        "--format=%H%x1f%ai%x1f%s%x1f%aN",
+        "--shortstat",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--all",
+    ]
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300
+            cmd,
+            env=git_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
         )
     except FileNotFoundError:
         raise RuntimeError("git binary not found. Install git and ensure it's on PATH.")

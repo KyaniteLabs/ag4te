@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "test_globs": [
+    "tests/test_*.py",
+    "plugins/ag4te-hermes/tests/test_*.py"
+  ],
+  "dependency_files": [
+    "setup.py",
+    ".ci/profile.json"
+  ],
+  "junit_reports": [
+    ".ci-results/tests.xml"
+  ],
+  "steps": [
+    {
+      "name": "Install Python 3.12 (newest supported), the package and pinned test tools",
+      "phase": "install",
+      "argv": [
+        "bash",
+        "-euo",
+        "pipefail",
+        "-c",
+        "apt-get update -qq && apt-get install -y -qq git nodejs python3-venv && python3 -m venv /tmp/uv-bootstrap && /tmp/uv-bootstrap/bin/pip install --quiet uv==0.10.2 && /tmp/uv-bootstrap/bin/uv venv --python 3.12.12 .venv && /tmp/uv-bootstrap/bin/uv pip install --python .venv '.[dev]' pytest==9.1.1 ruff==0.16.10"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "Check out pinned Hermes and install its locked runtime",
+      "phase": "install",
+      "argv": [
+        "bash",
+        "-euo",
+        "pipefail",
+        "-c",
+        "git clone --filter=blob:none --no-checkout https://github.com/NousResearch/hermes-agent.git .hermes-runtime && git -C .hermes-runtime checkout --detach 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19 && /tmp/uv-bootstrap/bin/uv sync --frozen --python 3.14 --directory .hermes-runtime && /tmp/uv-bootstrap/bin/uv pip install --python .hermes-runtime/.venv/bin/python pytest==9.1.1"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "Lint the whole repo (same command as GitHub CI)",
+      "phase": "verify",
+      "argv": [
+        ".venv/bin/ruff",
+        "check",
+        "."
+      ]
+    },
+    {
+      "name": "Check formatting (same as GitHub CI)",
+      "phase": "verify",
+      "argv": [
+        ".venv/bin/ruff",
+        "format",
+        "--check",
+        "."
+      ]
+    },
+    {
+      "name": "Build the wheel once and record its digest",
+      "phase": "build",
+      "argv": [
+        "bash",
+        "-euo",
+        "pipefail",
+        "-c",
+        "/tmp/uv-bootstrap/bin/uv build --wheel --out-dir .ci-results/dist . && (cd .ci-results/dist && sha256sum *.whl | tee SHA256SUMS)"
+      ]
+    },
+    {
+      "name": "Run all tests",
+      "phase": "test",
+      "argv": [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "tests",
+        "plugins/ag4te-hermes/tests",
+        "-q",
+        "--tb=short",
+        "-p",
+        "no:cacheprovider",
+        "--junitxml=.ci-results/tests.xml"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "Run Hermes plugin tests and fail on skips",
+      "phase": "test",
+      "argv": [
+        "bash",
+        "-euo",
+        "pipefail",
+        "-c",
+        "test_log=$(mktemp); env -u HERMES_HOME HOME=\"$PWD/.ci-hermes-home\" AG4TE_HERMES_SOURCE=\"$PWD/.hermes-runtime\" .hermes-runtime/.venv/bin/python -m pytest plugins/ag4te-hermes/tests -q --tb=short -rs 2>&1 | tee \"$test_log\"; if grep -Eq '[0-9]+ skipped' \"$test_log\"; then echo 'plugin tests were skipped'; exit 1; fi"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "Smoke-test the built wheel from a clean venv (package data + demo)",
+      "phase": "acceptance",
+      "argv": [
+        "bash",
+        "-euo",
+        "pipefail",
+        "-c",
+        "(cd .ci-results/dist && sha256sum -c SHA256SUMS); python3 -c 'import sys, zipfile; names = zipfile.ZipFile(sys.argv[1]).namelist(); assert any(n.startswith(\"archaeology/visualization/\") and n.endswith(\".html\") for n in names), \"wheel lacks visualization templates\"' .ci-results/dist/*.whl; accept=$(mktemp -d); /tmp/uv-bootstrap/bin/uv venv --python 3.12.12 \"$accept/venv\"; /tmp/uv-bootstrap/bin/uv pip install --python \"$accept/venv\" .ci-results/dist/*.whl; cd \"$accept\"; ./venv/bin/devarch --help > /dev/null; ./venv/bin/devarch demo --force --build-db; test -s projects/demo-archaeology/data/archaeology.db"
+      ],
+      "timeout_seconds": 600
+    }
+  ]
+}

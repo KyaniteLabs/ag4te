@@ -1,21 +1,25 @@
-# DevArch Framework
+# AG4TE
 
-**TL;DR:** DevArch Framework — local git repository archaeology: mine commit history into SQLite, detect development signals, run analysis vectors, and generate reports. Best for engineers, researchers, and AI agents who need to understand how a codebase evolved.
+**TL;DR:** AG4TE (formerly DevArch Framework; the command is still `devarch` and the package `devarch-framework`) — local git repository archaeology: mine commit history into SQLite, detect development signals, run analysis vectors, and generate reports. Best for engineers, researchers, and AI agents who need to understand how a codebase evolved.
 
-[![GitHub release](https://img.shields.io/github/v/release/KyaniteLabs/devarch-framework)](https://github.com/KyaniteLabs/devarch-framework/releases)
+[![GitHub release](https://img.shields.io/github/v/release/KyaniteLabs/ag4te)](https://github.com/KyaniteLabs/ag4te/releases)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/KyaniteLabs/devarch-framework.svg?style=social)](https://github.com/KyaniteLabs/devarch-framework)
+[![GitHub stars](https://img.shields.io/github/stars/KyaniteLabs/ag4te.svg?style=social)](https://github.com/KyaniteLabs/ag4te)
 
-**Git repository archaeology framework.** Mine commit history, detect development signals, run 6 analysis vectors, and generate engineering narrative reports — from any git repository, fully local, no external services.
+**Git repository archaeology framework.** Mine commit history, detect development signals, run 6 analysis vectors, and generate engineering narrative reports — from any git repository. Mining and analysis run locally on your machine; the generated HTML pages load Chart.js, d3 and Google Fonts from a CDN when you open them.
 
 ```bash
-git clone https://github.com/KyaniteLabs/devarch-framework.git && cd devarch-framework && pip install -e .
+git clone https://github.com/KyaniteLabs/ag4te.git && cd ag4te && pip install -e .
 ```
 
 DevArch treats your git history as structured data. It extracts commits into a queryable SQLite database, runs heuristic signal detection (gaps, velocity shifts, author changes), executes specialized analysis vectors, and generates interactive HTML visualizations and markdown reports. Built for engineers, researchers, and AI agents that need to understand how a codebase evolved.
 
 > **Just want a quick learning diagnostic?** [Dev Learning Archaeologist](https://github.com/simongonzalezdc/dev-learning-archaeologist) is a zero-setup ICM folder — drop it in any project, run through Claude Code, no install required.
+
+## Hermes Desktop plugin
+
+AG4TE also ships as a [Hermes](https://github.com/NousResearch/hermes-agent) plugin. It runs a dig from Hermes Desktop and draws the result as strata: the repo as a cut agate, a plain-words story of its history, commits per day by kind of work, eras, quiet gaps, signals, weekly rhythm, practice health, and authors split into people, agents and bots. It also adds `/ag4te` and a read-only `ag4te_dig` tool for agents. Install and settings: [plugins/ag4te-hermes](plugins/ag4te-hermes/README.md).
 
 ## Evidence integrity (0.4.0)
 
@@ -42,8 +46,8 @@ DevArch transforms git history into structured insights through a full-featured 
 
 ```bash
 # Clone the repository
-git clone https://github.com/KyaniteLabs/devarch-framework.git
-cd devarch-framework
+git clone https://github.com/KyaniteLabs/ag4te.git
+cd ag4te
 
 # Install in editable mode
 pip install -e .
@@ -62,6 +66,17 @@ devarch init my-project --description "My repo archaeology" --repo-url https://g
 
 # Or create a demo project with synthetic data
 devarch demo --build-db
+```
+
+The demo needs no repository or network, so it is a quick end-to-end check. CI runs this block on every change, and each `# expect:` line must appear in the output:
+
+```bash readme-test
+cd "$(mktemp -d)"   # the demo writes ./projects/
+devarch demo --build-db
+# expect: Created sanitized demo project
+# expect: Try: devarch build-db demo-archaeology
+devarch signals demo-archaeology
+# expect: Detected 0 signals, 1 clusters
 ```
 
 ### 2. Mine Git History
@@ -131,10 +146,11 @@ devarch audit my-project --fail-on MEDIUM
 
 ### Signal Detection
 - `devarch signals <project> [--config] [--min-gap-days]` -- Run signal detection heuristics
-- `devarch extract-sessions <project> --sessions-dir <path>` -- Extract coding sessions
+- `devarch extract-sessions <project> --sessions-dir <path>` -- Extract coding sessions recursively. By default it selects the configured `repo_path`; if unknown, provide `--project-slug=<slug>`. Use `--all-projects` to scan all projects, or `--include-subagents` to include subagent sessions. The command fails if it finds no session files. Session headers show human and agent messages and filtered harness entries; SDK and subagent prompts are not counted as human. The `sdk` and `sdk-cli` entrypoints are agent-driven; interactive, missing, and unknown entrypoints are treated as human unless the file is under `subagents`.
 
 ### Analysis
 - `devarch analyze <project> [--vector] [--prompts]` -- Run analysis vectors
+- `devarch benchmark <project>` -- Generate an agent performance benchmark visualization
 - Legacy `cascade`, `opportunity`, `dashboard` and `publish-static` commands are disabled pending safety/evidence redesign.
 
 ### Visualization & Reporting
@@ -151,7 +167,8 @@ devarch audit my-project --fail-on MEDIUM
 
 ### Multi-Project Operations
 - `devarch sync [--project] [--skip-mine] [--skip-signals]` -- Sync multiple projects
-- `devarch global-viz [--output] [--top-n] [--year]` -- Generate global visualization
+- `devarch global-viz [--output] [--top] [--year]` -- Generate global visualization
+- `devarch multi-project-dashboard [--output] [--top] [--year]` -- Generate a multi-project dashboard
 - `devarch fetch-github <owner> [--output]` -- Fetch repository metadata from GitHub
 
 ### Local Pipeline
@@ -195,9 +212,21 @@ Configure multiple projects in `config/profile.json`:
   "developer": {
     "name": "Your Name",
     "github_username": "yourusername"
+  },
+  "sync": {
+    "run_mine": true,
+    "run_signals": true,
+    "run_analysis": true,
+    "default_min_gap_days": 14
   }
 }
 ```
+
+The `sync` settings control mining, signals, analysis, and the gap threshold in
+days. The deprecated `sync_settings` keys `auto_mine`, `auto_signals`, and
+`min_gap_days` fall back to `run_mine`, `run_signals`, and
+`default_min_gap_days`, respectively. Canonical `sync` values take precedence;
+unknown settings produce a warning.
 
 Then run sync operations:
 
@@ -215,6 +244,33 @@ devarch sync --skip-mine
 Each project needs a `name` and a repository location. `path` (shown above) and
 `repo_path` are both accepted for the location; `repo_path` is the canonical
 key used by the shipped `config/profile.json`.
+
+### Author identities
+
+Mining uses each repository's `.mailmap` for display names and emails; bot and
+agent classification uses the raw commit identity. Re-mine older extractions to
+retain raw identities. Mining repositories you did not create runs Git with their
+repository configuration, so inspect or isolate untrusted repositories first. In
+`config/profile.json`, `developer.aliases` lists alternate names or emails for
+`developer.name`, and `developer.agent_identities` lists agent names or emails.
+For project-specific mappings, add `projects/<project>/identity_map.json`:
+
+```json
+{
+  "aliases": {"Alternate Name": "Canonical Name", "alias@example.com": "Canonical Name"},
+  "agent_identities": ["Example Agent", "agent@example.com"]
+}
+```
+
+Author shifts use the daily primary author and wait seven days by default;
+`author_debounce_days` and optional `author_debounce_commits` in a JSON file
+passed to `devarch signals --config` adjust that threshold. Class changes among humans,
+bots and configured agents produce separate strong signals. Bot classification
+uses common bot name and email patterns, so identity settings may need review.
+Identity detection uses the workspace profile when present, otherwise the
+packaged profile, and project identity-map entries take precedence. For an
+existing project synced with a custom `pipeline.sync(profile_path=...)`, put
+its aliases in `identity_map.json`: the detector does not receive that override.
 
 ## Database Inspection
 
@@ -270,7 +326,7 @@ Architecture decisions documented in `docs/decisions.md`.
 DevArch Framework integrates several excellent open-source libraries:
 
 - **Click** (BSD License) — Elegant CLI framework for command-line interfaces
-- **SQLite** (Public Domain) — Embedded SQL database engine with FTS5 full-text search
+- **SQLite** (Public Domain) — Embedded SQL database engine with FTS4 full-text search
 - **Chart.js** (MIT License) — Responsive JavaScript charting library
 - **D3.js** (BSD License) — Document-driven data visualization framework
 - **Google Fonts** (OFL License) — Open-source typography (Inter, JetBrains Mono)
@@ -335,10 +391,10 @@ Yes. Any local git repository with commit history works. No GitHub API key, no c
 Yes. The framework is ICM-compliant — it ships with structured context layers (`CLAUDE.md`, stage contracts, `llms.txt`) so Claude Code, Cursor, and other AI coding agents can understand and operate the pipeline without manual instruction. A bundled `skills/` folder enables one-command usage from the Claude Code CLI.
 
 **What size repositories does DevArch handle?**
-Tested on repositories from dozens to tens of thousands of commits. SQLite + FTS5 handles large git histories without any external infrastructure.
+Tested on repositories from dozens to tens of thousands of commits. SQLite + FTS4 handles large git histories without any external infrastructure.
 
 **Is my data sent anywhere?**
-No. DevArch runs entirely locally. All mining, analysis, and report generation happens on your machine. No telemetry, no cloud API calls.
+No. Mining and analysis run locally on your machine, and DevArch sends no telemetry and calls no cloud API. One thing does use the network: the generated HTML pages load Chart.js, d3 and Google Fonts from a CDN when you open them, so the CDN sees that request. Open them offline and the charts and fonts will not load.
 
 ## Related Projects
 
@@ -361,7 +417,7 @@ More from [KyaniteLabs](https://kyanitelabs.tech). Related projects:
 
 ## What is DevArch Framework?
 
-**DevArch Framework** is a local **git repository archaeology framework**: it mines commit history into SQLite, runs heuristic signal detection (gaps, velocity shifts, author changes), executes analysis vectors, and generates HTML visualizations and Markdown reports — no external services.
+**DevArch Framework** is a local **git repository archaeology framework**: it mines commit history into SQLite, runs heuristic signal detection (gaps, velocity shifts, author changes), executes analysis vectors, and generates HTML visualizations and Markdown reports, with mining and analysis running locally (the HTML pages load Chart.js, d3 and fonts from a CDN).
 
 | | |
 | --- | --- |
@@ -369,20 +425,20 @@ More from [KyaniteLabs](https://kyanitelabs.tech). Related projects:
 | **Category** | git repository archaeology framework (CLI + Python package) |
 | **Best for** | engineers, researchers, and AI agents who need to understand how a codebase evolved |
 | **Not** | a productivity-scoring tool or a hosted analytics service |
-| **Source** | [GitHub](https://github.com/KyaniteLabs/devarch-framework) |
+| **Source** | [GitHub](https://github.com/KyaniteLabs/ag4te) |
 | **Keywords** | git history analysis, repository archaeology, commit mining, development signals, engineering narrative reports |
 
 ## Who it's for
 
 - Primary: engineers, researchers, and AI agents who need to understand how a codebase evolved
-- Use when you need to mine git history into a queryable SQLite database, detect development signals, and generate evidence-bound reports, fully locally
+- Use when you need to mine git history into a queryable SQLite database, detect development signals, and generate evidence-bound reports, with mining and analysis running locally
 - Skip if you need a productivity-scoring tool or a hosted analytics service
 
 ## FAQ
 
 ### What is DevArch Framework?
 
-**DevArch Framework** is a local **git repository archaeology framework**: it mines commit history into SQLite, runs heuristic signal detection (gaps, velocity shifts, author changes), executes analysis vectors, and generates HTML visualizations and Markdown reports — no external services.
+**DevArch Framework** is a local **git repository archaeology framework**: it mines commit history into SQLite, runs heuristic signal detection (gaps, velocity shifts, author changes), executes analysis vectors, and generates HTML visualizations and Markdown reports, with mining and analysis running locally (the HTML pages load Chart.js, d3 and fonts from a CDN).
 
 ### Who should use DevArch Framework?
 
@@ -400,7 +456,7 @@ Treat the README status and release tags as source of truth for maturity. Valida
 
 - Maintained as of 2026 on the default branch
 - Prefer release tags when pinning dependencies
-- Report issues on [GitHub](https://github.com/KyaniteLabs/devarch-framework/issues)
+- Report issues on [GitHub](https://github.com/KyaniteLabs/ag4te/issues)
 
 ## Agent surface
 
@@ -410,7 +466,7 @@ Treat the README status and release tags as source of truth for maturity. Valida
 
 ## Contributing
 
-Issues and PRs welcome on [GitHub](https://github.com/KyaniteLabs/devarch-framework). Keep public docs free of secrets and machine-local paths.
+Issues and PRs welcome on [GitHub](https://github.com/KyaniteLabs/ag4te). Keep public docs free of secrets and machine-local paths.
 
 ## License
 

@@ -63,8 +63,20 @@ def _parse_date(date_str: str) -> datetime | None:
     if not date_str:
         return None
     date_str = str(date_str).strip()
-    # Normalize timezone-bearing dates to UTC, preserving a naive UTC return
-    # for existing date arithmetic callers. Legacy trailing annotations remain supported.
+    # Keep the UTC offset when there is one: commits from different zones must
+    # sort by instant, not by local wall-clock text. Offset-aware input is
+    # returned as naive UTC so callers can keep comparing naive datetimes.
+    for fmt in ("%Y-%m-%d %H:%M:%S %z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            aware = datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+        if aware.tzinfo is None:
+            # Python 3.15's %z also matches input with no offset and returns a naive value;
+            # astimezone() would then read it as local time and shift it. Treat it as offset-less.
+            continue
+        return aware.astimezone(timezone.utc).replace(tzinfo=None)
+    # Legacy trailing annotations remain supported.
     candidates = [date_str, date_str[:25], date_str[:26], date_str[:19], date_str[:10]]
     for candidate in candidates:
         try:

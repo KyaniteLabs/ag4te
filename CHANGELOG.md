@@ -1,4 +1,31 @@
-# 0.4.1 — Unreleased readiness candidate
+# Changelog
+
+All notable changes to DevArch Framework will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.4.1] - Unreleased readiness candidate
+
+- Apply Git mailmaps and configured author aliases, classify raw identities, and debounce human, bot and agent handoffs (#77). Commit dates come from epoch seconds, so out-of-range timezone offsets in old history no longer break mining. Sync uses the selected profile; mining disables signature programs and external diff/text conversion for Git logs.
+
+- Scope default session extraction to the configured repository, with `--all-projects` as an opt-in; fix leading-dash option values and duplicate error prefixes (#75).
+- Filter harness blocks in linear time, including a truncated block that opens a message, and identify SDK and subagent messages in extracted narratives (#76). Unknown entrypoints stay human, `--include-subagents` keeps subagent sidechain content, and malformed entries are counted separately. An unclosed tag no longer shields later harness blocks, prose that starts with an unrelated tag such as `<command-line>` is kept, and blank lines are not counted as malformed.
+
+- Discover nested Claude Code sessions, with optional project and subagent filters (#75). Default discovery follows Claude Code's folder naming, including long hashed paths.
+
+- Apply documented sync settings and warn when profiles use deprecated or unknown keys (#73). Mistyped setting values fail before anything is written.
+
+- Continue syncing healthy projects after a failure, report the cause and return a failing exit status (#72). A repository with no commits yet is skipped, not failed; a missing repository still fails the run. When any project fails, sync says which projects `global/` reflects. Sync and cascade mine through the same checks as `mine`: shallow clones are refused and the coverage manifest is rebound to the newly mined bytes.
+
+- Accept bare Git mirrors in sync and pipeline mining while preserving errors for corrupt checkouts (#71). Mining ignores an inherited `GIT_DIR` or other Git location variables, and `mine` and sync name the enclosing repository when pointed at a subfolder. Repository paths that are not valid UTF-8 are compared exactly.
+
+- AG4TE Hermes plugin 0.3.0: agent dig reads and progress refresh the open Desktop page through local events; `ag4te_show` points it at a section or item, with live events taking priority over pending REST responses (Forgejo #53).
+- Stop the AG4TE plugin's dig lease from sending Ctrl-C on Windows. It checked whether a lease owner was alive with `os.kill(pid, 0)`, which on Windows is `CTRL_C_EVENT` to the whole console group, so it interrupted Hermes itself. It now asks Windows with `OpenProcess`/`GetExitCodeProcess`.
+- Harden the AG4TE Hermes plugin after review: chat platforms (and any platform not known as local) can no longer stop a dig, and get summaries without paths, error text or author names; one dig at a time now holds across Hermes processes through a workspace lease; two repositories with the same folder name no longer share a project; a small era beside a large one keeps a 3px band in the stone; the layout regression runs on a sanitized fixture instead of host data; tests no longer name real people; the plugin pins DevArch to the catalog-reviewed commit (`d884f9a`).
+- Rename the repository to AG4TE (`KyaniteLabs/ag4te`). The `devarch` command and the `devarch-framework` package keep their names.
+- Draw the AG4TE plugin's stone as an iris agate: one band per era, oldest at the rim, laid out in time order with each kind of work sized by its share of the era's commits. Classify plain imperative commit subjects ("Add…", "Fix…") as kinds of work, and pin the plugin to that DevArch commit (`6dd2299`).
+- Add the AG4TE Hermes plugin (`plugins/ag4te-hermes`) and fix the commit data model: the Git extractor records email and parents, dates keep their UTC offset, era signals sort by instant, and SDLC practices are word-bounded with merges left out.
 
 - Fix QA regressions from #90: `global-viz` and `multi-project-dashboard` now resolve their templates against the installed package (they failed outside the repo source root); `sync` accepts the README-documented `path` profile key as an alias for `repo_path`, validates `name` and the repository location as nonempty strings before any filesystem writes, and reports malformed project entries with actionable errors instead of `KeyError`/`TypeError` tracebacks; `serve` passes datasette's `--setting` as two arguments so the server actually starts.
 - Parse ISO-8601 and legacy Git-log commit timestamps in agent benchmarks, and report malformed dates with commit context instead of silently dropping rows.
@@ -12,20 +39,17 @@
 - Correct package/documentation metadata to Apache-2.0. Released under Apache-2.0 since 2026-06-02 (PR #54); the initial MIT grant from 2026-04-29 remains in effect for copies obtained before that date.
 - Add installed-wheel checks to native Python3.12 CI and remove suppressed CI failures.
 
-# 0.4.0 — Evidence integrity
+## [0.4.0] - 2026-10-01 — Evidence integrity
 
 Fix full-history mining for bare repositories/worktrees, reject shallow coverage, bind extraction artifacts, reconcile CSV/SQLite metrics, and generate portable measured visualizations. Replace unsupported agent/ML/quality assertions with explicit uncertainty. See [release notes](docs/RELEASE_0.4.0.md) for output compatibility and validation.
 
-# Changelog
-
-All notable changes to DevArch Framework will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
 ## [0.3.1] - 2026-05-12
 
+### Changed
+- **Pipeline service owns every verb**: `cascade`, `sync` and `serve` moved from inline CLI orchestration onto `archaeology/pipeline.py` (`prepare_serve`, `cascade`, `sync`), joining init/mine/build-db/signals/analyze/visualize/report/audit. CLI output is byte-identical — pinned by the adapter characterization golden, extended to the three verbs — and the sync flow gained hermetic service-level tests (its profile resolution reads the package's own `config/profile.json` first, so the golden pins only its error path).
+
 ### Security
+- **CLI project-name validation**: the CLI now validates project names the way the MCP server does. `devarch init ../escape` used to create `projects/../escape`, outside `projects/`, and `demo --project ../x --force` could write files there. Every CLI command that takes a project name (`init`, `demo`, `public-case-study`, `audit`, `mine -p`, and the commands that open an existing project) rejects unsafe names before any write, with `Error: Project name …` and exit 1. `create_demo_project` also validates the name itself, which covers `public-case-study` and any other caller. Allowed names are 1–100 characters from `A–Z a–z 0–9 . _ -`, with no `..` and no leading `.` or `-`; `.` used to scaffold into `projects/` itself. Behaviour change: names with spaces or other characters are now refused by the CLI too, and a leading `.` or `-` is now refused by both the CLI and MCP.
 - **Path traversal protection**: Added `validate_project_name()` to MCP server — blocks `..`, `/`, and non-alphanumeric characters in project names
 - **Workspace validation**: `DEVARCH_WORKSPACE` env var now verified to exist and be a directory
 - **Vector name validation**: MCP `query_analysis` tool validates vector names against known list, preventing injection
@@ -44,9 +68,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Database errors**: Added `sqlite3.Error` logging in `analysis_runner._query_db()` when verbose mode is active
 
 ### Changed
+- **One pipeline service behind the CLI and MCP adapters.** `archaeology/pipeline.py` now owns project-directory resolution, input validation and the init, mine, build-db, signals, analyze, visualize, report, audit and run-pipeline operations, and raises `PipelineError` for caller-fixable failures. `cli.py` and `mcp_server/tools.py` keep only click parsing and echo, and dict shaping. Observable behaviour of both surfaces is unchanged and pinned by `tests/golden/pipeline_contract.json`; the differences between them (in-process vs subprocess build, unexpanded vs expanded repo path, separate visualize and report renderers) are kept as explicit parameters. `mcp_server/project_utils.py` re-exports the workspace helpers from the service.
+- **Removed the standalone stage scripts and committed stage outputs.** `stages/0{4..8}-*/*.py` (5 scripts, 2,042 lines) were independent copies of the pipeline. They imported nothing from `archaeology`, nothing in the repo or docs ran them, and the `devarch` CLI is the supported implementation. The 20 committed working artifacts under `stages/*/output/` (sample CSVs, a SQLite database, generated HTML and Markdown) are removed, and `.gitignore` now keeps stage outputs local. The stage `CONTEXT.md` contracts and each `output/.gitkeep` stay.
+- **Single version source**: `/api/health` and the global insights payload reported a hard-coded `1.0.0` from `archaeology/api.py`. They now report `archaeology.__version__` (0.3.1). The unused `__version__ = "1.0.0"` in `scripts/content/__init__.py` is removed.
+- **CLI command name**: hints and errors named a nonexistent `archaeology` command. The installed command is `devarch` (`setup.py` console_scripts). Fixed in `cli.py`, `demo.py`, `report.py` and the demo fixture READMEs. The "Run 'devarch init …' first" error now formats the project name: it was a plain string that printed `{project_name}` literally.
+- **Executable README**: a `bash readme-test` block (offline demo plus signals) runs in CI on every change through the shared profile's Layer 3 step. It pins the corrected hint text.
 - **Consistent branding**: Standardized to "DevArch Framework" across all 36 references (was mixed with "Development Archaeology")
 - **Author attribution**: Standardized to "Simon Gonzalez De Cruz" across setup.py, LICENSE, and generated HTML
-- **Version in footers**: HTML templates now show "DevArch Framework v0.3.0"
+- **Version in footers**: HTML templates show "DevArch Framework v0.3.1" (bumped with this version train; no artifacts have been tagged)
 - **Third-party acknowledgments**: Added dependency attribution section to README.md
 
 ## [0.3.0] - 2026-05-11
@@ -117,7 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Analysis vector system
 - CLI scaffolding
 
-[Unreleased]: https://github.com/KyaniteLabs/devarch-framework/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/KyaniteLabs/devarch-framework/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/KyaniteLabs/devarch-framework/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/KyaniteLabs/devarch-framework/releases/tag/v0.1.0
+[Unreleased]: https://github.com/KyaniteLabs/ag4te/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/KyaniteLabs/ag4te/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/KyaniteLabs/ag4te/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/KyaniteLabs/ag4te/releases/tag/v0.1.0
