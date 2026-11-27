@@ -27,7 +27,12 @@ REPO_PROFILE = os.path.abspath(str(Path(cli.__file__).parent.parent / "config" /
 
 
 def _hide_repo_profile(monkeypatch):
-    """Force sync to fall back to ./config/profile.json in the test cwd."""
+    """Hide the package's config/profile.json from these tests.
+
+    ``sync`` reads ./config/profile.json in the cwd first, so this is not
+    needed to reach it; it keeps a package-first regression from reading the
+    developer's real profile here.
+    """
     real_exists = os.path.exists
     monkeypatch.setattr(
         os.path,
