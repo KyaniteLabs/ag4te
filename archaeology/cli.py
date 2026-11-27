@@ -311,7 +311,12 @@ def serve(project_name, port, unsafe_cors):
 
     click.echo(f"Launching Datasette at http://localhost:{port}")
     try:
-        subprocess.run(cmd, timeout=300)
+        subprocess.run(cmd, check=True, timeout=300)
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(
+            f"Datasette exited with code {exc.returncode}; nothing is serving on port {port}. "
+            "If the port is already in use, pass a different --port."
+        ) from exc
     finally:
         if metadata_src and metadata_src.startswith(tempfile.gettempdir()):
             os.unlink(metadata_src)
