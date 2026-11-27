@@ -2,9 +2,9 @@
 
 The adapter characterization (``test_pipeline_contract.py``) pins the CLI
 transcript byte-for-byte, including for these verbs, but ``sync``'s full flow
-can only run there as an error path: the verb resolves its profile from the
-package's ``config/profile.json`` first, which names the developer's real
-projects. These tests drive the service directly with a hermetic profile.
+can only run there as an error path: run from this checkout, the profile it
+resolves (``./config/profile.json``, the package's own) names the developer's
+real projects. These tests drive the service directly with a hermetic profile.
 Nothing is mocked except the Datasette launch.
 """
 

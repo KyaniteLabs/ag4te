@@ -35,6 +35,10 @@ with tempfile.TemporaryDirectory(prefix="devarch-installed-") as directory:
     assert not Path(identity["path"]).is_relative_to(source), identity
     assert identity["version"] == identity["runtime"] == "0.4.1", identity
     assert identity["license"] == "Apache-2.0", identity
+    # The wheel ships no config/: the developer's own profile must not reach a
+    # user's install, and there must be no package profile for `sync` to read.
+    installed_profile = Path(identity["path"]).resolve().parent.parent / "config" / "profile.json"
+    assert not installed_profile.exists(), installed_profile
     repo = root / "source"
     run("git", "init", repo)
     run("git", "-C", repo, "config", "user.name", "Fixture")
