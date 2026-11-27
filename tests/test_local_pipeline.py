@@ -1,12 +1,16 @@
 """Tests for archaeology/local_pipeline.py LocalPipelineStatus."""
 
+import json
 import os
 from pathlib import Path
+
+from click.testing import CliRunner
 
 # Set required environment variables BEFORE importing the module
 os.environ["ARCHAEOLOGY_PIPELINE_ROOT"] = "/fake/pipeline"
 os.environ["ARCHAEOLOGY_REPOS_DIR"] = "/fake/repos"
 
+from archaeology.cli import main
 from archaeology.local_pipeline import LocalPipelineStatus
 
 
@@ -114,3 +118,43 @@ def test_local_pipeline_status_with_invalid_total_value():
     )
     # Invalid total should default to 0
     assert status.issue_total == 0
+
+
+def test_local_pipeline_missing_latest_json_is_clean_error(tmp_path):
+    """A missing pipeline status is one Click error line, not a traceback."""
+    result = CliRunner().invoke(
+        main,
+        ["local-pipeline", "--repo", "devarch-framework", "--pipeline-dir", str(tmp_path)],
+    )
+    expected = tmp_path / ".omc" / "logs" / "repo-pipeline" / "latest.json"
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert result.output.strip() == f"Error: Local pipeline latest.json not found: {expected}"
+
+
+def test_local_pipeline_unknown_repo_is_clean_error(tmp_path):
+    """An unknown repo in a valid pipeline run is one Click error line, not a traceback."""
+    latest = tmp_path / ".omc" / "logs" / "repo-pipeline" / "latest.json"
+    latest.parent.mkdir(parents=True)
+    latest.write_text(
+        json.dumps(
+            {
+                "supervision": {
+                    "missions": [
+                        {"repo": "KyaniteLabs/devarch-framework", "issues": {"total": 0}},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(
+        main,
+        ["local-pipeline", "--repo", "totally-unknown-repo", "--pipeline-dir", str(tmp_path)],
+    )
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert result.output.strip() == (
+        "Error: Repo 'totally-unknown-repo' not found in latest local pipeline reviewed repos. "
+        "Reviewed: KyaniteLabs/devarch-framework"
+    )

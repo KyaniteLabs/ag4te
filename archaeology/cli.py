@@ -325,7 +325,12 @@ def serve(project_name, port, unsafe_cors):
 
     click.echo(f"Launching Datasette at http://localhost:{port}")
     try:
-        subprocess.run(cmd, timeout=300)
+        subprocess.run(cmd, check=True, timeout=300)
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(
+            f"Datasette exited with code {exc.returncode}; nothing is serving on port {port}. "
+            "If the port is already in use, pass a different --port."
+        ) from exc
     finally:
         if metadata_src and metadata_src.startswith(tempfile.gettempdir()):
             os.unlink(metadata_src)
@@ -556,7 +561,10 @@ def local_pipeline(
             top_repos=top_repos,
             review_days=review_days,
         )
-    status = read_local_pipeline_status(pipeline_dir, repo_name)
+    try:
+        status = read_local_pipeline_status(pipeline_dir, repo_name)
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
     for line in status_lines(status):
         click.echo(line)
     if fail_on_issues and status.issue_total > 0:
