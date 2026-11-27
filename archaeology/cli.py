@@ -542,7 +542,10 @@ def local_pipeline(
             top_repos=top_repos,
             review_days=review_days,
         )
-    status = read_local_pipeline_status(pipeline_dir, repo_name)
+    try:
+        status = read_local_pipeline_status(pipeline_dir, repo_name)
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
     for line in status_lines(status):
         click.echo(line)
     if fail_on_issues and status.issue_total > 0:
