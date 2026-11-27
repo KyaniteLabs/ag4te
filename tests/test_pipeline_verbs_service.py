@@ -830,6 +830,39 @@ def test_sync_checks_for_the_commits_table_before_running_vectors(tmp_path, monk
     assert ("Sync finished with failures.", True) in lines.items
 
 
+def test_sync_reports_an_unreadable_database_instead_of_raising(tmp_path, monkeypatch):
+    from archaeology import analysis_runner
+
+    monkeypatch.chdir(tmp_path)
+    db = tmp_path / "projects" / "broken" / "data" / "archaeology.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"this is not a sqlite database")
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "projects": [{"name": "broken", "repo_path": str(tmp_path / "repo")}],
+                "sync": {"run_signals": False, "run_analysis": True},
+            }
+        )
+    )
+    monkeypatch.setattr(
+        pipeline.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    calls = []
+    monkeypatch.setattr(
+        analysis_runner, "run_analysis_vectors", lambda *a, **kw: calls.append(a) or {}
+    )
+    lines = Lines()
+    outcome = pipeline.sync(None, skip_mine=True, profile_path=str(profile), on_line=lines)
+    assert calls == []
+    assert outcome.exit_code == 1
+    assert "cannot read" in lines.text() and "file is not a database" in lines.text()
+    assert "Traceback" not in lines.text()
+
+
 def test_sync_summaries_list_only_projects_that_were_mined(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     for key, value in GIT_ENV.items():

@@ -953,24 +953,29 @@ def _resolve_profile_path() -> str:
     return profile_path
 
 
-def _has_commits_table(db_path: str) -> bool:
-    """True when the project database exists and has the table analysis reads.
+def _commits_table_problem(db_path: str) -> str | None:
+    """Why analysis cannot read ``db_path``, or None when it can.
 
     ``build-db`` succeeds on a project that was never mined: it creates the
     pipeline tables but no ``commits`` table. Running the analysis vectors
     against that database fails once per vector with 'no such table: commits',
-    so sync checks for the table first and reports one actionable line.
+    so sync asks first and reports one actionable line instead.
     """
     if not os.path.exists(db_path):
-        return False
-    conn = sqlite3.connect(db_path, timeout=30)
+        return f"{db_path} does not exist (the project was never mined)"
     try:
-        row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='commits'"
-        ).fetchone()
-    finally:
-        conn.close()
-    return row is not None
+        conn = sqlite3.connect(db_path, timeout=30)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='commits'"
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return f"cannot read {db_path}: {exc}"
+    if row is None:
+        return f"{db_path} has no 'commits' table (the project was never mined)"
+    return None
 
 
 def sync(
@@ -1293,12 +1298,9 @@ def sync(
             if project_statuses.get(proj["name"]) != "built":
                 continue
             db_path = os.path.join("projects", proj["name"], "data", "archaeology.db")
-            if not _has_commits_table(db_path):
-                say(
-                    f"    SKIP analysis for {proj['name']}: {db_path} has no 'commits' "
-                    "table (the project was never mined)",
-                    err=True,
-                )
+            problem = _commits_table_problem(db_path)
+            if problem:
+                say(f"    SKIP analysis for {proj['name']}: {problem}", err=True)
                 project_statuses[proj["name"]] = "failed"
                 continue
             say(f"  Analyzing {proj['name']}...")
