@@ -1,0 +1,572 @@
+diff --git a/base/archaeology/extractors/git.py b/local/archaeology/extractors/git.py
+index 76cf574d9e86c96a8659c279cf1e6e37c61d68ba..e09e47b05304836eff52ce783e605cb90318de1f 100644
+--- a/base/archaeology/extractors/git.py
++++ b/local/archaeology/extractors/git.py
+@@ -1,11 +1,26 @@
+ """Git log extraction for archaeology pipeline."""
+ 
+ import csv
++import os
+ import subprocess
+ from pathlib import Path
+ 
++# Never allow promisor/partial clones to pull missing blobs during mining.
++_LOCAL_GIT_ENV = {
++    "GIT_NO_LAZY_FETCH": "1",
++    "GIT_TERMINAL_PROMPT": "0",
++    "GIT_ALLOW_PROTOCOL": "",
++    "GIT_OPTIONAL_LOCKS": "0",
++}
+ 
+-def _git(repo_path: str, *args: str) -> str:
++
++def _git_env() -> dict:
++    env = os.environ.copy()
++    env.update(_LOCAL_GIT_ENV)
++    return env
++
++
++def _git(repo_path: str, *args: str, check: bool = True) -> str:
+     """Read Git metadata without invoking a shell or repository hooks."""
+     try:
+         result = subprocess.run(
+@@ -15,16 +30,84 @@ def _git(repo_path: str, *args: str) -> str:
+             encoding="utf-8",
+             errors="replace",
+             timeout=300,
++            env=_git_env(),
+         )
+     except FileNotFoundError as exc:
+         raise RuntimeError("git binary not found. Install git and ensure it's on PATH.") from exc
+     except subprocess.TimeoutExpired as exc:
+         raise RuntimeError("git read timed out after 300s") from exc
+-    if result.returncode:
++    if check and result.returncode:
+         raise RuntimeError(f"git {args[0]} failed: {result.stderr.strip()}")
+     return result.stdout
+ 
+ 
++def _git_dir(repo_path: str) -> Path:
++    raw = _git(repo_path, "rev-parse", "--git-dir").strip()
++    p = Path(raw)
++    if not p.is_absolute():
++        p = Path(repo_path).expanduser().resolve() / p
++    return p.resolve()
++
++
++def incomplete_object_reason(repo_path: str) -> str | None:
++    """Return an actionable error if the repo would lazy-fetch missing objects."""
++    git_dir = _git_dir(repo_path)
++    promisor_packs = (
++        list((git_dir / "objects" / "pack").glob("*.promisor"))
++        if (git_dir / "objects" / "pack").is_dir()
++        else []
++    )
++    if promisor_packs:
++        return (
++            "Refusing incomplete-object / partial (promisor) clone — mining is local-only "
++            "and must not fetch missing blobs. Re-clone with full objects "
++            "(`git clone --no-partial` / omit `--filter`) or run "
++            "`git fetch --refetch` / `git sparse-checkout disable` as appropriate, then retry."
++        )
++    # remote.*.promisor config (exit 1 = none)
++    out = _git(repo_path, "config", "--get-regexp", r"^remote\..*\.promisor$", check=False)
++    # Also probe filter config
++    filt = _git(
++        repo_path, "config", "--get", "remote.origin.partialclonefilter", check=False
++    ).strip()
++    promisor_cfg = _git(repo_path, "config", "--get-regexp", r"\.promisor$", check=False).strip()
++    if filt or promisor_cfg or out.strip():
++        return (
++            "Refusing partial clone (promisor/filter configured) — mining is local-only "
++            "and must not fetch missing blobs. Re-clone without `--filter`/`--partial` and retry."
++        )
++    # With GIT_NO_LAZY_FETCH=1, missing blobs make shortstat fail rather than fetch.
++    # Probe HEAD tree readability when commits exist.
++    count = int(_git(repo_path, "rev-list", "--all", "--count").strip() or "0")
++    if count:
++        probe = subprocess.run(
++            [
++                "git",
++                "-C",
++                str(Path(repo_path).expanduser()),
++                "rev-list",
++                "--objects",
++                "--all",
++                "--missing=print",
++            ],
++            capture_output=True,
++            text=True,
++            encoding="utf-8",
++            errors="replace",
++            timeout=120,
++            env=_git_env(),
++        )
++        if probe.returncode == 0:
++            missing = [ln for ln in probe.stdout.splitlines() if ln.startswith("?")]
++            if missing:
++                return (
++                    f"Refusing incomplete-object repository ({len(missing)} missing object(s)). "
++                    "Mining is local-only and will not fetch. Restore full objects and retry."
++                )
++        # Some git versions lack --missing=print; fall through.
++    return None
++
++
+ def repository_coverage(repo_path: str) -> dict:
+     """Record local reachability, never imply that remote/deleted refs were fetched."""
+     _git(repo_path, "rev-parse", "--git-dir")
+@@ -44,7 +127,9 @@ def repository_coverage(repo_path: str) -> dict:
+     }
+ 
+ 
+-def extract_git_log(repo_path: str, output_path: str, verbose: bool = False) -> int:
++def extract_git_log(
++    repo_path: str, output_path: str, verbose: bool = False, max_commits: int = 0
++) -> int:
+     """Extract every reachable commit, with NUL-delimited fields and UTC dates.
+ 
+     Subjects can contain tabs, pipes and unit separators. Git NUL delimiters
+@@ -56,7 +141,12 @@ def extract_git_log(repo_path: str, output_path: str, verbose: bool = False) ->
+ 
+     from ..utils import atomic_write
+ 
+-    raw = _git(repo_path, "log", "-z", "--all", "--format=%H%x00%aI%x00%s%x00%an")
++    reason = incomplete_object_reason(repo_path)
++    if reason:
++        raise RuntimeError(reason)
++
++    limit = [f"--max-count={max_commits}"] if max_commits > 0 else []
++    raw = _git(repo_path, "log", "-z", "--all", *limit, "--format=%H%x00%aI%x00%s%x00%an")
+     fields = raw.split("\0")
+     if fields[-1] == "":
+         fields.pop()
+@@ -72,7 +162,7 @@ def extract_git_log(repo_path: str, output_path: str, verbose: bool = False) ->
+         )
+         writer.writerow([sha, normalized, subject, author])
+     count = len(fields) // 4
+-    expected = int(_git(repo_path, "rev-list", "--all", "--count").strip())
++    expected = int(_git(repo_path, "rev-list", "--all", *limit, "--count").strip())
+     if count != expected:
+         raise RuntimeError("Repository changed during extraction; retry against frozen refs")
+     atomic_write(output_path, stream.getvalue())
+@@ -81,12 +171,34 @@ def extract_git_log(repo_path: str, output_path: str, verbose: bool = False) ->
+     return count
+ 
+ 
+-def extract_git_log_with_stats(repo_path: str, output_path: str, verbose: bool = False) -> int:
+-    """Extract git log with file change stats."""
+-    cmd = ["git", "-C", repo_path, "log", "--format=%H%x1f%ai%x1f%s%x1f%an", "--shortstat", "--all"]
++def extract_git_log_with_stats(
++    repo_path: str, output_path: str, verbose: bool = False, max_commits: int = 0
++) -> int:
++    """Extract git log with file change stats (local-only; no lazy fetch)."""
++    reason = incomplete_object_reason(repo_path)
++    if reason:
++        raise RuntimeError(reason)
++
++    limit = [f"--max-count={max_commits}"] if max_commits > 0 else []
++    cmd = [
++        "git",
++        "-C",
++        repo_path,
++        "log",
++        "--format=%H%x1f%ai%x1f%s%x1f%an",
++        "--shortstat",
++        "--all",
++        *limit,
++    ]
+     try:
+         result = subprocess.run(
+-            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300
++            cmd,
++            capture_output=True,
++            text=True,
++            encoding="utf-8",
++            errors="replace",
++            timeout=300,
++            env=_git_env(),
+         )
+     except FileNotFoundError:
+         raise RuntimeError("git binary not found. Install git and ensure it's on PATH.")
+@@ -94,7 +206,14 @@ def extract_git_log_with_stats(repo_path: str, output_path: str, verbose: bool =
+         raise RuntimeError("git log timed out after 300s. Repository may be too large.")
+ 
+     if result.returncode != 0:
+-        raise RuntimeError(f"git log failed: {result.stderr}")
++        err = (result.stderr or "").strip()
++        if "promisor" in err.lower() or "lazy" in err.lower() or "missing" in err.lower():
++            raise RuntimeError(
++                "git log --shortstat failed because objects are missing; "
++                "refusing to fetch. Restore a complete local clone and retry. "
++                f"Detail: {err}"
++            )
++        raise RuntimeError(f"git log failed: {err}")
+ 
+     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+     with open(output_path, "w", encoding="utf-8") as f:
+@@ -102,7 +221,7 @@ def extract_git_log_with_stats(repo_path: str, output_path: str, verbose: bool =
+ 
+     if verbose:
+         print(f"Extracted git log with stats from {repo_path}")
+-    return int(_git(repo_path, "rev-list", "--all", "--count").strip())
++    return int(_git(repo_path, "rev-list", "--all", *limit, "--count").strip())
+ 
+ 
+ def get_repo_list(repo_path: str) -> list[str]:
+@@ -115,6 +234,7 @@ def get_repo_list(repo_path: str) -> list[str]:
+             text=True,
+             cwd=repo_path,
+             timeout=60,
++            env=_git_env(),
+         )
+     except FileNotFoundError:
+         raise RuntimeError("gh CLI not found. Install GitHub CLI and ensure it's on PATH.")
+diff --git a/base/archaeology/metrics.py b/local/archaeology/metrics.py
+index 246403c22d7f66a9d01313e07a9b93cd4c45c427..8fe9d9b122696cb7002c98f05a97ce335d5a8b1d 100644
+--- a/base/archaeology/metrics.py
++++ b/local/archaeology/metrics.py
+@@ -4,6 +4,7 @@ import csv
+ import json
+ import sqlite3
+ from collections import Counter
++from contextlib import closing
+ from pathlib import Path
+ 
+ from .utils import _parse_date, atomic_write
+@@ -16,7 +17,7 @@ def write_metrics(project_root: Path, db_path: Path) -> dict:
+     with csv_path.open(encoding="utf-8", newline="") as handle:
+         rows = list(csv.DictReader(handle))
+     hashes = [row["hash"] for row in rows]
+-    with sqlite3.connect(db_path) as conn:
++    with closing(sqlite3.connect(db_path)) as conn:
+         stored = [row[0] for row in conn.execute("SELECT hash FROM commits")]
+     if len(set(hashes)) != len(hashes) or sorted(hashes) != sorted(stored):
+         raise ValueError("CSV/SQLite commit identities differ or contain duplicates")
+@@ -34,6 +35,10 @@ def write_metrics(project_root: Path, db_path: Path) -> dict:
+             indent=2,
+         ),
+     )
++    from .provenance import bind_derived_artifact
++
++    bind_derived_artifact(project_root, project_root / "deliverables" / "canonical-metrics.json")
++    bind_derived_artifact(project_root, project_root / "deliverables" / "data.json")
+     return metrics
+ 
+ 
+diff --git a/base/archaeology/provenance.py b/local/archaeology/provenance.py
+index c4041ac833722678fde37c79de8a4ca0aa5faeb9..e090221c1bf838f6caf2e9e4d8d4ddf8a04d964f 100644
+--- a/base/archaeology/provenance.py
++++ b/local/archaeology/provenance.py
+@@ -14,6 +14,7 @@ INPUTS = (
+     "data/archaeology.db",
+     "data/detected-signals.json",
+     "data/commit-eras.json",
++    "data/gap-clusters.json",
+     "deliverables/canonical-metrics.json",
+     "deliverables/data.json",
+ )
+@@ -91,3 +92,118 @@ def verify_artifact(project, artifact):
+         current = {str(p.relative_to(project)): digest(p) for p in analysis_paths(project)}
+         if binding["analysis"] != current:
+             raise ValueError(f"Stale analysis inputs for artifact: {artifact.name}; re-export")
++
++
++def _load_coverage(project):
++    coverage_path = Path(project) / "data" / "coverage.json"
++    if not coverage_path.is_file():
++        raise ValueError("Missing data/coverage.json for bound mining project")
++    try:
++        coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
++    except (OSError, ValueError) as exc:
++        raise ValueError("Invalid data/coverage.json") from exc
++    if not isinstance(coverage, dict):
++        raise ValueError("Invalid data/coverage.json")
++    return coverage
++
++
++def verify_mining_inputs(project):
++    """Fail when mined CSV/stats no longer match coverage.json artifact hashes."""
++    project = Path(project)
++    if not requires_binding(project):
++        return
++    coverage = _load_coverage(project)
++    hashes = coverage.get("artifact_sha256")
++    if not isinstance(hashes, dict) or not hashes:
++        raise ValueError("Mining coverage missing artifact_sha256 bindings")
++    for name, expected in hashes.items():
++        path = project / "data" / name
++        actual = digest(path)
++        if actual != expected:
++            raise ValueError(f"Stale or modified mining artifact: {name}; remine before export")
++
++
++def verify_derived_stage(project, *, skip_rels=()):
++    """Refuse export when DB/metrics/signals belong to a different or incomplete mining generation.
++
++    A failed remine may refresh coverage.json + raw CSV hashes while leaving an older
++    archaeology.db / metrics / signals tree in place. Export must not publish that mix.
++
++    Legacy CLI coverage (no mining_status / mining_generation) only requires that the
++    SQLite DB exist. Plugin mining always stamps generation + derived_sha256 and must
++    pass the full binding checks.
++
++    skip_rels lists artifacts the caller is about to regenerate (signal detection skips
++    detected-signals.json and gap-clusters.json). Export passes no skip list.
++    """
++    project = Path(project)
++    if not requires_binding(project):
++        return
++    coverage = _load_coverage(project)
++    status = coverage.get("mining_status")
++    generation = coverage.get("mining_generation")
++    db_path = project / "data" / "archaeology.db"
++
++    # Legacy manifests from the framework CLI mine path.
++    if status is None and generation is None:
++        if not db_path.is_file():
++            raise ValueError("Missing archaeology.db; remine before export")
++        return
++
++    if status != "complete":
++        raise ValueError(
++            "Mining rebuild incomplete or unbound; remine successfully before export "
++            f"(mining_status={status!r})"
++        )
++    if not generation:
++        raise ValueError("Mining coverage missing mining_generation; remine before export")
++    derived = coverage.get("derived_sha256")
++    if not isinstance(derived, dict) or not derived:
++        raise ValueError("Mining coverage missing derived_sha256 bindings; remine before export")
++    expected_db = derived.get("archaeology.db")
++    actual_db = digest(db_path)
++    if not expected_db or actual_db != expected_db:
++        raise ValueError(
++            "Stale or unbound archaeology.db for current mining generation; remine before export"
++        )
++    # Optional derived JSON must declare the same generation when present.
++    skipped = {str(rel) for rel in skip_rels}
++    for rel in (
++        "deliverables/canonical-metrics.json",
++        "data/detected-signals.json",
++        "data/gap-clusters.json",
++        "deliverables/data.json",
++    ):
++        if rel in skipped:
++            continue
++        path = project / rel
++        if not path.is_file():
++            continue
++        try:
++            payload = json.loads(path.read_text(encoding="utf-8"))
++        except (OSError, ValueError) as exc:
++            raise ValueError(f"Invalid derived artifact: {rel}") from exc
++        if not isinstance(payload, dict) or payload.get("mining_generation") != generation:
++            raise ValueError(f"Unbound derived artifact: {rel}; rebuild signals/metrics")
++        sidecar = path.with_name(path.name + ".generation.json")
++        try:
++            binding = json.loads(sidecar.read_text(encoding="utf-8"))
++        except (OSError, ValueError) as exc:
++            raise ValueError(f"Missing derived content binding: {rel}") from exc
++        if binding != {"mining_generation": generation, "sha256": digest(path)}:
++            raise ValueError(f"Modified derived artifact: {rel}; rebuild signals/metrics")
++
++
++def bind_derived_artifact(project, artifact):
++    project, artifact = Path(project), Path(artifact)
++    coverage_path = project / "data" / "coverage.json"
++    if not coverage_path.is_file():
++        return
++    generation = _load_coverage(project).get("mining_generation")
++    if not generation:
++        return
++    payload = json.loads(artifact.read_text(encoding="utf-8"))
++    payload["mining_generation"] = generation
++    atomic_write(artifact, json.dumps(payload, indent=2))
++    binding = {"mining_generation": generation, "sha256": digest(artifact)}
++    atomic_write(str(artifact) + ".generation.json", json.dumps(binding, indent=2))
+diff --git a/base/archaeology/report.py b/local/archaeology/report.py
+index dbd9b7a9339a89d22e1a65ccdb4ba72f3f8d21ab..a3eca636e7dacbc23b8ae78763cd5cab08c22a72 100644
+--- a/base/archaeology/report.py
++++ b/local/archaeology/report.py
+@@ -8,7 +8,7 @@ from datetime import datetime
+ from pathlib import Path
+ from typing import Any
+ 
+-from archaeology.visualization.design_system import (
++from .visualization.design_system import (
+     THEME_SWITCHER_HTML,
+     body_end_bundle,
+     head_bundle,
+@@ -49,14 +49,27 @@ def export_markdown_report(
+     """Export a concise Markdown report from canonical metrics + analysis JSON."""
+     project_root = Path(project_root)
+     deliverables = project_root / "deliverables"
+-    from .provenance import verify_analyses
++    from .provenance import (
++        analysis_paths,
++        verify_analyses,
++        verify_derived_stage,
++        verify_mining_inputs,
++    )
+ 
+-    verify_analyses(project_root, require=True)
++    # Fail closed when mined CSV/stats diverge from coverage.json hashes.
++    verify_mining_inputs(project_root)
++    # Refuse mixed-generation export after a failed remine (old DB/metrics under new coverage).
++    verify_derived_stage(project_root)
++    # Require bound analyses only when analysis artifacts exist; signals-only
++    # reports remain valid after mine → signals.
++    verify_analyses(project_root, require=bool(analysis_paths(project_root)))
+     analysis_dir = deliverables / "analysis"
+     data_dir = project_root / "data"
+     project = _load_json(project_root / "project.json") or {}
+     canonical = _load_json(deliverables / "canonical-metrics.json") or {}
+     eras = _load_json(data_dir / "commit-eras.json") or {}
++    gap_clusters = _load_json(data_dir / "gap-clusters.json") or {}
++    detected = _load_json(data_dir / "detected-signals.json") or {}
+     # Look for analysis files in analysis/ subdirectory first, then fall back to deliverables root
+     analysis_search = [analysis_dir, deliverables]
+     analyses = {}
+@@ -79,6 +92,20 @@ def export_markdown_report(
+     out.append(
+         "Automated vectors are commit-keyword investigation leads, not verified source findings, causal explanations, session measurements or implementation-quality scores. Missing evidence is not absence.\n\n"
+     )
++    coverage = _load_json(data_dir / "coverage.json") or {}
++    out.append("## Local History Coverage\n\n")
++    out.append(f"Scope: {coverage.get('scope', 'not recorded')}\n\n")
++    out.append(
++        f"Sampled history: {coverage.get('sampled', False)}; extracted "
++        f"{coverage.get('extracted_count', coverage.get('commit_count', 'unknown'))} of "
++        f"{coverage.get('commit_count', 'unknown')} locally reachable commits; "
++        f"cap={coverage.get('max_commits', 'none')}. "
++        "Metrics, signals and clusters describe only this extraction, not all history.\n\n"
++    )
++    out.append(
++        f"Local refs recorded: {len(coverage.get('refs', []))}. "
++        "Deleted/inaccessible/unfetched refs are outside coverage; no remote fetch.\n\n"
++    )
+     out.append("## Canonical Metrics\n\n")
+     metric_rows = [
+         ("Total commits", canonical.get("total_commits", eras.get("total_commits"))),
+@@ -92,14 +119,91 @@ def export_markdown_report(
+     out.append("\n")
+ 
+     era_list = eras.get("eras") if isinstance(eras, dict) else []
+-    if era_list:
++    cluster_file_list = gap_clusters.get("eras") if isinstance(gap_clusters, dict) else []
++    era_semantics = ""
++    if isinstance(gap_clusters, dict) and gap_clusters.get("era_semantics"):
++        era_semantics = str(gap_clusters.get("era_semantics") or "")
++    elif isinstance(eras, dict) and eras.get("era_semantics"):
++        era_semantics = str(eras.get("era_semantics") or "")
++    out.append("## Era Semantics\n\n")
++    if era_semantics:
++        out.append(f"{era_semantics}\n\n")
++    else:
++        out.append(
++            "Automated archaeology emits **signals** and **gap-separated clusters**. "
++            "Clusters are heuristic groupings, not curated human development eras. "
++            "A `commit-eras.json` narrative era list is optional and human-authored; "
++            "generated clusters live in `gap-clusters.json`.\n\n"
++        )
++
++    # Prefer curated human eras from commit-eras.json; never treat gap clusters as eras.
++    curated = [
++        e for e in (era_list or []) if isinstance(e, dict) and e.get("kind") != "gap_cluster"
++    ]
++    legacy_clusters_in_eras = [
++        e for e in (era_list or []) if isinstance(e, dict) and e.get("kind") == "gap_cluster"
++    ]
++    if curated:
+         out.append("## Development Eras\n\n")
+-        for era in era_list:
++        for era in curated:
++            out.append(
++                _bullet(
++                    f"**Era {era.get('id')}: {era.get('name')}** — {era.get('dates', 'unknown dates')}; "
++                    f"{era.get('commits', 'unknown')} commits. "
++                    f"{era.get('description') or era.get('narrative_arc') or ''}"
++                )
++            )
++        out.append("\n")
++
++    display_clusters = list(cluster_file_list or []) or list(legacy_clusters_in_eras or [])
++    if display_clusters:
++        out.append("## Gap-Separated Clusters\n\n")
++        for era in display_clusters:
++            if not isinstance(era, dict):
++                continue
++            out.append(
++                _bullet(
++                    f"**Cluster {era.get('id')}: {era.get('name')}** — {era.get('dates', 'unknown dates')}; "
++                    f"{era.get('commits', 'unknown')} commits. "
++                    f"{era.get('description') or era.get('narrative_arc') or ''}"
++                )
++            )
++        out.append("\n")
++
++    # Measured signals from detect_signals (always prefer evidence over silence).
++    signal_list = []
++    cluster_list = []
++    if isinstance(detected, dict):
++        signal_list = detected.get("signals") or []
++        cluster_list = detected.get("cluster_summary") or []
++    if signal_list or cluster_list:
++        out.append("## Detected Signals\n\n")
++        out.append(
++            f"Measured {len(signal_list)} signal(s) and {len(cluster_list)} gap cluster(s). "
++            "These are heuristic investigation leads, not verified conclusions.\n\n"
++        )
++        for sig in list(signal_list)[:25]:
++            if not isinstance(sig, dict):
++                out.append(_bullet(str(sig)[:240]))
++                continue
++            detail = sig.get("detail") or sig.get("description") or sig.get("message") or ""
+             out.append(
+                 _bullet(
+-                    f"**Era {era.get('id')}: {era.get('name')}** — {era.get('dates', 'unknown dates')}; {era.get('commits', 'unknown')} commits. {era.get('description') or era.get('narrative_arc') or ''}"
++                    f"**{sig.get('type') or sig.get('kind') or 'signal'}** "
++                    f"@ {sig.get('date') or sig.get('when') or 'unknown'}: {detail}"
+                 )
+             )
++        if cluster_list and not display_clusters:
++            out.append("\n### Clusters (from signals)\n\n")
++            for cluster in list(cluster_list)[:25]:
++                if not isinstance(cluster, dict):
++                    continue
++                out.append(
++                    _bullet(
++                        f"{cluster.get('start_date')} → {cluster.get('end_date')} "
++                        f"({cluster.get('commit_count')} commits, {cluster.get('active_days')} active days)"
++                    )
++                )
+         out.append("\n")
+ 
+     sdlc = analyses.get("sdlc-gap-finder") or {}
+diff --git a/base/archaeology/visualization/agent_benchmark.py b/local/archaeology/visualization/agent_benchmark.py
+index 37bc3c4b52d4319e0b95683d5ec507eda9748fef..4c38a247a6e776b063dbf6e1b511dbaf64c17cd5 100644
+--- a/base/archaeology/visualization/agent_benchmark.py
++++ b/local/archaeology/visualization/agent_benchmark.py
+@@ -11,7 +11,7 @@ from datetime import date, datetime
+ from pathlib import Path
+ from typing import Any, Dict
+ 
+-from archaeology.visualization.design_system import (
++from .design_system import (
+     THEME_SWITCHER_HTML,
+     body_end_bundle,
+     head_bundle,
+diff --git a/base/archaeology/visualization/dashboard.py b/local/archaeology/visualization/dashboard.py
+index b73baaf664f460d5fab6cdf4bc7d43034bd5b006..e4b6776463b5eafcdf3aa61448bb295c1d0e6f69 100644
+--- a/base/archaeology/visualization/dashboard.py
++++ b/local/archaeology/visualization/dashboard.py
+@@ -12,7 +12,7 @@ from datetime import datetime
+ from pathlib import Path
+ from typing import Any
+ 
+-from archaeology.visualization.design_system import (
++from .design_system import (
+     THEME_SWITCHER_HTML,
+     body_end_bundle,
+     head_bundle,

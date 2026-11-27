@@ -1,0 +1,61 @@
+name: DevArch Hermes
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to a pull request cancels its superseded run; main runs are never cancelled.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: bash scripts/devarch-vendor.sh check
+
+  install:
+    name: install (${{ matrix.hermes.version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        hermes:
+          - version: v0.21.6
+            ref: 818c13be1dc4fd28987e1e881a9408224afd4535
+          - version: v0.23.0
+            ref: 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ matrix.hermes.ref }}
+          path: .hermes-runtime
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.11.13'
+      - name: Install Hermes from its lockfile
+        working-directory: .hermes-runtime
+        run: uv sync --frozen --no-dev --python 3.14
+      - name: Verify DevArch dependencies and run the demo
+        working-directory: .hermes-runtime
+        run: .venv/bin/python "$GITHUB_WORKSPACE/scripts/check_devarch_hermes_install.py"
