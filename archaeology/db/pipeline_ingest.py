@@ -13,7 +13,7 @@ Pipeline JSON format (expected keys):
       {
         "name": "repo-name",
         "tier": 1,
-        "issues": {...},
+        "issues": {"total": 2, "critical": 0, "high": 0, "medium": 2, "low": 0},
         "fixes_applied": 2,
         "status": "clean"
       }
@@ -142,6 +142,24 @@ def ensure_tables(db_path: Path) -> None:
         conn.close()
 
 
+def count_issues(issues: object) -> int:
+    """Count the issues a pipeline repo entry reports.
+
+    The pipeline summarizes a repo's issues as ``{"total": N, "critical": ..,
+    "high": .., "medium": .., "low": ..}``. ``total`` already counts every issue,
+    so it is the count; summing the whole object would count each issue twice.
+    """
+    if isinstance(issues, list):
+        return len(issues)
+    if not isinstance(issues, dict):
+        return 0
+    total = issues.get("total")
+    if isinstance(total, int) and not isinstance(total, bool):
+        return total
+    # A bare severity breakdown carries no ``total`` and is summed.
+    return sum(issues.values())
+
+
 def ingest_run(db_path: Path, run_json: dict, source_file: str = "") -> int:
     """Ingest a single pipeline run JSON. Returns the run_id."""
     ensure_tables(db_path)
@@ -168,13 +186,7 @@ def ingest_run(db_path: Path, run_json: dict, source_file: str = "") -> int:
 
         for repo in run_json.get("repos", []):
             issues = repo.get("issues", [])
-            issues_count = (
-                len(issues)
-                if isinstance(issues, list)
-                else sum(issues.values())
-                if isinstance(issues, dict)
-                else 0
-            )
+            issues_count = count_issues(issues)
             issues_json = json.dumps(issues) if isinstance(issues, (list, dict)) else "[]"
             fixes_raw = repo.get("fixes_applied", 0)
             fixes_count = (
