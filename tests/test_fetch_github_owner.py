@@ -69,7 +69,7 @@ def test_readme_documented_form_is_accepted(fetch_workspace):
     with patch.object(github_fetcher, "save_github_data", return_value=dataset) as save:
         result = CliRunner().invoke(main, _readme_fetch_github_argv())
     assert result.exit_code == 0, result.output
-    assert save.call_args.args[0] == str(OUTPUT_RELATIVE)
+    assert Path(save.call_args.args[0]) == OUTPUT_RELATIVE
     assert save.call_args.kwargs["owner"] == "example-owner"
     assert "2 repos, 9 total commits" in result.output
 
