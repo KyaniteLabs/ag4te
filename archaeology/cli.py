@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 import click
+from click.core import ParameterSource
 
 from .analysis_runner import (
     failed_vectors,
@@ -730,7 +731,7 @@ def global_viz(output_dir, top_n, year, verbose):
 
     if not os.path.exists(commits_csv) and not os.path.exists(github_json):
         click.echo(
-            "No global data found. Run 'devarch fetch-github' or 'devarch sync' first.",
+            "No global data found. Run 'devarch fetch-github <owner>' or 'devarch sync' first.",
             err=True,
         )
         sys.exit(1)
@@ -802,7 +803,7 @@ def multi_project_dashboard(output_dir, top_n, year, verbose):
     github_json = os.path.join(data_dir, "github-repos.json")
 
     if not os.path.exists(github_json):
-        click.echo("No GitHub data found. Run 'devarch fetch-github' first.", err=True)
+        click.echo("No GitHub data found. Run 'devarch fetch-github <owner>' first.", err=True)
         sys.exit(1)
 
     # Build dashboard data
@@ -858,18 +859,42 @@ def multi_project_dashboard(output_dir, top_n, year, verbose):
 
 
 @main.command("fetch-github")
+@click.argument("owner", required=False)
 @click.option(
-    "--owner", default=os.environ.get("ARCHAEOLOGY_GITHUB_OWNER", ""), help="GitHub username/org"
+    "--owner",
+    "owner_option",
+    envvar="ARCHAEOLOGY_GITHUB_OWNER",
+    help="GitHub username/org (same as OWNER)",
 )
 @click.option(
     "--output", "output_path", default="global/data/github-repos.json", help="Output JSON path"
 )
-def fetch_github(owner, output_path):
+def fetch_github(owner, owner_option, output_path):
     """Fetch repo metadata from GitHub API for all repos (no cloning)."""
-    from .visualization.github_fetcher import save_github_data
+    from .visualization.github_fetcher import GitHubFetchError, save_github_data
 
+    owner = (owner or "").strip()
+    owner_option = (owner_option or "").strip()
+    if owner and owner_option:
+        from_env = (
+            click.get_current_context().get_parameter_source("owner_option")
+            is ParameterSource.ENVIRONMENT
+        )
+        if from_env:
+            owner_option = ""  # an explicit OWNER wins over the environment default
+        elif owner != owner_option:
+            raise click.UsageError("OWNER and --owner name different owners; pass the owner once")
+    owner = owner or owner_option
+    if not owner:
+        raise click.UsageError(
+            "fetch-github needs an owner: devarch fetch-github <OWNER> "
+            "or set ARCHAEOLOGY_GITHUB_OWNER"
+        )
     click.echo(f"Fetching repos for {owner} from GitHub...")
-    data = save_github_data(output_path, owner=owner)
+    try:
+        data = save_github_data(output_path, owner=owner)
+    except GitHubFetchError as error:
+        raise click.ClickException(str(error)) from error
     click.echo(f"  {data['total_repos']} repos, {data['total_commits']} total commits")
 
 
