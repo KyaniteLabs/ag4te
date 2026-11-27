@@ -39,6 +39,19 @@ def _run_child(cmd, **kwargs):
     return result
 
 
+def _console_echo(text, err=False):
+    """Echo one transcript line without crashing on a legacy console.
+
+    Sync's transcript carries arrows and check marks. A cp1252 console cannot
+    encode them, and writing one raises UnicodeEncodeError in the middle of a
+    run that has already built its projects. Encode against the target stream's
+    own encoding so unrepresentable characters degrade instead of raising.
+    """
+    stream = sys.stderr if err else sys.stdout
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    click.echo(text.encode(encoding, "replace").decode(encoding, "replace"), err=err)
+
+
 def _check_name(project_name):
     """Reject unsafe project names before any command touches the filesystem."""
     from .pipeline import validate_project_name
@@ -703,7 +716,7 @@ def sync(projects, skip_mine, skip_signals, verbose):
         skip_mine=skip_mine,
         skip_signals=skip_signals,
         verbose=verbose,
-        on_line=lambda text, err=False: click.echo(text, err=err),
+        on_line=_console_echo,
     )
     if outcome.exit_code:
         raise click.exceptions.Exit(outcome.exit_code)
