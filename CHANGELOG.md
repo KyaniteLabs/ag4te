@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.1] - Unreleased readiness candidate
 
 - `sync` checks the project database for the `commits` table before running the analysis vectors, so a project that was never mined fails the run with one actionable line instead of six `no such table: commits` failures. Regression tests pin a non-zero exit when a registered repository path is missing, and `project-summaries.json` lists only projects that were actually mined.
+- `devarch serve` exits non-zero and reports that nothing is serving when Datasette cannot start (for example when the port is already in use), instead of printing the launch line and exiting 0.
 - Apply Git mailmaps and configured author aliases, classify raw identities, and debounce human, bot and agent handoffs (#77). Commit dates come from epoch seconds, so out-of-range timezone offsets in old history no longer break mining. Sync uses the selected profile; mining disables signature programs and external diff/text conversion for Git logs.
 
 - Scope default session extraction to the configured repository, with `--all-projects` as an opt-in; fix leading-dash option values and duplicate error prefixes (#75).
