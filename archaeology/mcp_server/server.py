@@ -154,7 +154,9 @@ def query_analysis(project_name: str, vector: str) -> dict[str, Any]:
 def query_eras(project_name: str) -> dict[str, Any]:
     """Get the era analysis (development phases and boundaries) for a project.
 
-    Returns JSON with eras and gap intervals. Use after detect_signals has run.
+    Returns hand-curated eras from data/commit-eras.json when the project has
+    them; otherwise the detected development phases and gap intervals from
+    data/detected-signals.json. Use after detect_signals has run.
     Pass project_name from init_project/run_pipeline.
     """
     return devarch_query_eras(project_name)
