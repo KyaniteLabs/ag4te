@@ -210,13 +210,68 @@ def devarch_query_metrics(project_name: str) -> dict[str, Any]:
     return metrics
 
 
+def _eras_from_detected_signals(project_name: str, detected: dict[str, Any]) -> dict[str, Any]:
+    """Shape detected signals as era-phase boundaries; invent no narratives."""
+    phases = [
+        {
+            "index": index,
+            "start_date": cluster.get("start_date", ""),
+            "end_date": cluster.get("end_date", ""),
+            "commits": cluster.get("commit_count", 0),
+            "active_days": cluster.get("active_days", 0),
+            "primary_author": cluster.get("primary_author", ""),
+            "dominant_repo": cluster.get("dominant_repo", ""),
+        }
+        for index, cluster in enumerate(detected.get("cluster_summary") or [], start=1)
+    ]
+    gaps = [
+        {
+            "date": signal.get("date", ""),
+            "detail": signal.get("detail", ""),
+            "strength": signal.get("strength", ""),
+        }
+        for signal in detected.get("signals") or []
+        if signal.get("type") == "gap"
+    ]
+    return {
+        "project": project_name,
+        "source": "detected-signals",
+        "curated": False,
+        "note": (
+            "No data/commit-eras.json for this project: returning the detected "
+            "development phases and gap intervals. Eras are hand-curated narrative "
+            "judgments; add data/commit-eras.json to define them."
+        ),
+        "total_commits": detected.get("commit_count", 0),
+        "date_range": detected.get("date_range") or {},
+        "active_days": detected.get("active_days", 0),
+        "eras": phases,
+        "gaps": gaps,
+    }
+
+
 def devarch_query_eras(project_name: str) -> dict[str, Any]:
-    """Get era analysis for a project."""
+    """Get era data for a project.
+
+    Hand-curated eras (``data/commit-eras.json``) take precedence. When a project
+    has none, this returns the development phases and gap intervals that
+    ``signals`` actually writes to ``data/detected-signals.json`` — factual
+    boundaries only, never invented era narratives.
+    """
     project_dir = get_project_dir(project_name)
-    eras = read_json(project_dir / "data" / "commit-eras.json")
-    if eras is None:
-        return {"error": "Era data not found. Run signals first."}
-    return eras
+    curated = read_json(project_dir / "data" / "commit-eras.json")
+    if curated is not None:
+        return curated
+
+    detected = read_json(project_dir / "data" / "detected-signals.json")
+    if detected is None:
+        return {
+            "error": (
+                "Era data not found. Run signals first to write "
+                "data/detected-signals.json, or add a hand-curated data/commit-eras.json."
+            )
+        }
+    return _eras_from_detected_signals(project_name, detected)
 
 
 def devarch_query_analysis(project_name: str, vector: str) -> dict[str, Any]:

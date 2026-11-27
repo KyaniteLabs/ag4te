@@ -444,3 +444,76 @@ def test_mcp_audit_never_evaluates_fail_on(tmp_path, monkeypatch):
     baseline = mcp.devarch_audit("audited", "HIGH")
     assert baseline["status"] == "complete"
     assert mcp.devarch_audit("audited", "BOGUS") == baseline
+
+
+# ── query_eras must not advertise an unreachable result (audit ledger row 43) ──
+#
+# The advertised pipeline (init -> mine -> build-db -> signals) writes
+# data/detected-signals.json. It never writes data/commit-eras.json: that file
+# is hand-curated input, produced only by the synthetic demo generator. The MCP
+# tool used to read only the curated file, so on a real mined repository it
+# always errored while instructing the caller to run a step that cannot produce
+# the file it reads.
+
+
+def _mcp_workspace(tmp_path, monkeypatch):
+    """An isolated workspace holding one real git repository."""
+    monkeypatch.setenv("DEVARCH_WORKSPACE", str(tmp_path))
+    (tmp_path / "projects").mkdir(exist_ok=True)
+    monkeypatch.chdir(tmp_path)
+    for k, v in GIT_ENV.items():
+        monkeypatch.setenv(k, v)
+    return _make_repo(tmp_path / "repo")
+
+
+def test_mcp_query_eras_works_on_a_pipeline_project(tmp_path, monkeypatch):
+    """query_eras returns era data on a project the advertised pipeline produced."""
+    repo = _mcp_workspace(tmp_path, monkeypatch)
+    mcp.devarch_init("eras", "d", "u")
+    mcp.devarch_mine(str(repo), "eras")
+    mcp.devarch_build_db("eras")
+    mcp.devarch_signals("eras")
+
+    result = mcp.devarch_query_eras("eras")
+    assert "error" not in result, result
+    # the fixture's 2026-01-03 -> 2026-02-20 gap splits it into two phases
+    assert [phase["start_date"] for phase in result["eras"]] == ["2026-01-01", "2026-02-20"]
+    assert [gap["date"] for gap in result["gaps"]] == ["2026-02-20"]
+    assert result["source"] == "detected-signals"
+    assert result["curated"] is False
+    # factual boundaries only: no invented era narratives
+    assert all("name" not in phase and "narrative_arc" not in phase for phase in result["eras"])
+
+
+def test_mcp_query_eras_prefers_hand_curated_eras(tmp_path, monkeypatch):
+    """A hand-curated data/commit-eras.json is still the authoritative answer."""
+    repo = _mcp_workspace(tmp_path, monkeypatch)
+    mcp.devarch_init("eras", "d", "u")
+    mcp.devarch_mine(str(repo), "eras")
+    curated = {
+        "project": "eras",
+        "lifespan": "5 days",
+        "total_commits": 5,
+        "eras": [{"id": 1, "name": "Genesis", "dates": "2026-01-01", "commits": 5}],
+    }
+    data_dir = tmp_path / "projects" / "eras" / "data"
+    (data_dir / "commit-eras.json").write_text(json.dumps(curated), encoding="utf-8")
+    assert mcp.devarch_query_eras("eras") == curated
+
+
+def test_mcp_query_eras_error_names_a_step_that_produces_what_it_reads(tmp_path, monkeypatch):
+    """The error may only send the caller to a step that yields the file it reads."""
+    repo = _mcp_workspace(tmp_path, monkeypatch)
+    mcp.devarch_init("eras", "d", "u")
+
+    result = mcp.devarch_query_eras("eras")
+    assert "error" in result
+    assert "signals" in result["error"]
+    assert "detected-signals.json" in result["error"]
+
+    # run exactly the step the error names, and the tool succeeds
+    mcp.devarch_mine(str(repo), "eras")
+    mcp.devarch_build_db("eras")
+    mcp.devarch_signals("eras")
+    assert (tmp_path / "projects" / "eras" / "data" / "detected-signals.json").exists()
+    assert "error" not in mcp.devarch_query_eras("eras")
