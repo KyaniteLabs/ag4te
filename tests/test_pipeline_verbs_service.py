@@ -777,6 +777,118 @@ def test_sync_skips_repository_without_commits(tmp_path, monkeypatch):
     assert "Traceback" not in lines.text()
 
 
+def test_sync_missing_repository_path_fails_the_run_and_names_it(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    gone = tmp_path / "gone"
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"projects": [{"name": "ghost", "repo_path": str(gone)}]}))
+    lines = Lines()
+    outcome = pipeline.sync(None, profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 1
+    assert outcome.project_statuses == {"ghost": "failed"}
+    assert any(f"SKIP ghost: repo not found at {gone}" in text for text, _ in lines.items)
+    assert "Sync complete." not in lines.text()
+    assert ("Sync finished with failures.", True) in lines.items
+    assert not (tmp_path / "global" / "data" / "project-summaries.json").exists()
+
+
+def test_sync_checks_for_the_commits_table_before_running_vectors(tmp_path, monkeypatch):
+    import sqlite3
+
+    from archaeology import analysis_runner
+
+    monkeypatch.chdir(tmp_path)
+    db = tmp_path / "projects" / "stale" / "data" / "archaeology.db"
+    db.parent.mkdir(parents=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE pipeline_runs (id INTEGER)")
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "projects": [{"name": "stale", "repo_path": str(tmp_path / "repo")}],
+                "sync": {"run_signals": False, "run_analysis": True},
+            }
+        )
+    )
+    monkeypatch.setattr(
+        pipeline.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    calls = []
+    monkeypatch.setattr(
+        analysis_runner, "run_analysis_vectors", lambda *a, **kw: calls.append(a) or {}
+    )
+    lines = Lines()
+    outcome = pipeline.sync(None, skip_mine=True, profile_path=str(profile), on_line=lines)
+    assert calls == []
+    assert outcome.exit_code == 1
+    assert outcome.project_statuses == {"stale": "failed"}
+    assert "no 'commits' table (the project was never mined)" in lines.text()
+    assert "no such table: commits" not in lines.text()
+    assert ("Sync finished with failures.", True) in lines.items
+
+
+def test_sync_reports_an_unreadable_database_instead_of_raising(tmp_path, monkeypatch):
+    from archaeology import analysis_runner
+
+    monkeypatch.chdir(tmp_path)
+    db = tmp_path / "projects" / "broken" / "data" / "archaeology.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"this is not a sqlite database")
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "projects": [{"name": "broken", "repo_path": str(tmp_path / "repo")}],
+                "sync": {"run_signals": False, "run_analysis": True},
+            }
+        )
+    )
+    monkeypatch.setattr(
+        pipeline.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    calls = []
+    monkeypatch.setattr(
+        analysis_runner, "run_analysis_vectors", lambda *a, **kw: calls.append(a) or {}
+    )
+    lines = Lines()
+    outcome = pipeline.sync(None, skip_mine=True, profile_path=str(profile), on_line=lines)
+    assert calls == []
+    assert outcome.exit_code == 1
+    assert "cannot read" in lines.text() and "file is not a database" in lines.text()
+    assert "Traceback" not in lines.text()
+
+
+def test_sync_summaries_list_only_projects_that_were_mined(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for key, value in GIT_ENV.items():
+        monkeypatch.setenv(key, value)
+    _make_repo(tmp_path / "src")
+    profile = tmp_path / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "projects": [
+                    {"name": "ghost", "repo_path": str(tmp_path / "gone")},
+                    {"name": "real", "repo_path": str(tmp_path / "src")},
+                ],
+                "sync": {"run_signals": False, "run_analysis": False},
+            }
+        )
+    )
+    lines = Lines()
+    outcome = pipeline.sync(None, profile_path=str(profile), on_line=lines)
+    assert outcome.exit_code == 1, lines.text()
+    assert outcome.project_statuses == {"ghost": "failed", "real": "built"}
+    summaries = json.loads((tmp_path / "global" / "data" / "project-summaries.json").read_text())
+    assert [entry["name"] for entry in summaries] == ["real"]
+    assert summaries[0]["total_commits"] == 3
+
+
 def test_run_child_timeout_is_clean():
     import sys
 

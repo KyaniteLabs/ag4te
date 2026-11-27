@@ -953,6 +953,31 @@ def _resolve_profile_path() -> str:
     return profile_path
 
 
+def _commits_table_problem(db_path: str) -> str | None:
+    """Why analysis cannot read ``db_path``, or None when it can.
+
+    ``build-db`` succeeds on a project that was never mined: it creates the
+    pipeline tables but no ``commits`` table. Running the analysis vectors
+    against that database fails once per vector with 'no such table: commits',
+    so sync asks first and reports one actionable line instead.
+    """
+    if not os.path.exists(db_path):
+        return f"{db_path} does not exist (the project was never mined)"
+    try:
+        conn = sqlite3.connect(db_path, timeout=30)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='commits'"
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return f"cannot read {db_path}: {exc}"
+    if row is None:
+        return f"{db_path} has no 'commits' table (the project was never mined)"
+    return None
+
+
 def sync(
     target_names: list[str] | tuple[str, ...] | None,
     *,
@@ -1271,6 +1296,12 @@ def sync(
         say("\nRunning automated analysis vectors...")
         for proj in targets:
             if project_statuses.get(proj["name"]) != "built":
+                continue
+            db_path = os.path.join("projects", proj["name"], "data", "archaeology.db")
+            problem = _commits_table_problem(db_path)
+            if problem:
+                say(f"    SKIP analysis for {proj['name']}: {problem}", err=True)
+                project_statuses[proj["name"]] = "failed"
                 continue
             say(f"  Analyzing {proj['name']}...")
             try:
