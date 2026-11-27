@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.1] - Unreleased readiness candidate
 
+- `devarch serve` exits non-zero and reports that nothing is serving when Datasette cannot start (for example when the port is already in use), instead of printing the launch line and exiting 0.
+
 - Apply Git mailmaps and configured author aliases, classify raw identities, and debounce human, bot and agent handoffs (#77). Commit dates come from epoch seconds, so out-of-range timezone offsets in old history no longer break mining. Sync uses the selected profile; mining disables signature programs and external diff/text conversion for Git logs.
 
 - Scope default session extraction to the configured repository, with `--all-projects` as an opt-in; fix leading-dash option values and duplicate error prefixes (#75).
