@@ -1,4 +1,4 @@
-"""``devarch sync`` must read the profile the user registered in ./config/profile.json.
+"""``devarch sync`` end to end: the registered profile and a legacy console.
 
 Audit ledger row 44. The verb resolved its profile from the package's own
 ``config/profile.json`` first and only fell back to the working directory when
@@ -8,10 +8,16 @@ setup) always has the package file, so it shadowed the user's profile:
 ``devarch sync --project <name>`` answered ``Unknown project`` for a project the
 user had registered.
 
-Each test runs the installed CLI in a fresh process, from a working directory
-that holds its own ``config/profile.json``, the way a user runs it. Nothing is
-patched. A built wheel ships no ``config/`` and cannot shadow anything, so the
-tests skip when the imported package has no profile beside it.
+The first two tests run the installed CLI in a fresh process, from a working
+directory that holds its own ``config/profile.json``, the way a user runs it.
+Nothing is patched. A built wheel ships no ``config/`` and cannot shadow
+anything, so they skip when the imported package has no profile beside it.
+
+The third test forces ``PYTHONIOENCODING=cp1252``: sync's transcript carries
+arrows and check marks, and a console with that code page used to crash the run
+with UnicodeEncodeError after the projects were already built. The variable is
+honoured on every OS, so the legacy-console path stays covered without a
+Windows runner.
 """
 
 import csv
@@ -83,9 +89,10 @@ def _workspace(root: Path, repo: Path) -> Path:
     return workspace
 
 
-def _devarch(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+def _devarch(cwd: Path, *args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
     """Run the installed CLI from ``cwd`` in a fresh process, as a user does."""
     env = {key: value for key, value in os.environ.items() if key != "DEVARCH_WORKSPACE"}
+    env.update(env_extra or {})
     return subprocess.run(
         [sys.executable, "-m", "archaeology.cli", *args],
         cwd=cwd,
@@ -135,3 +142,19 @@ def test_sync_all_operates_only_on_projects_registered_in_the_workspace_profile(
     # Nothing else: no project from the package's own profile was created.
     created = sorted(p.name for p in (workspace / "projects").iterdir())
     assert created == ["good-one", "missing-one"]
+
+
+def test_sync_completes_on_a_legacy_console(tmp_path):
+    repo = _make_repo(tmp_path / "repo")
+    workspace = _workspace(tmp_path, repo)
+
+    result = _devarch(
+        workspace, "sync", "--project", "good-one", env_extra={"PYTHONIOENCODING": "cp1252"}
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "Traceback" not in output
+    assert "global-commits.csv" in output
+    assert "Sync complete." in output
+    assert (workspace / "projects" / "good-one" / "data" / "archaeology.db").exists()
