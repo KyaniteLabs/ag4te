@@ -946,10 +946,16 @@ class SyncOutcome:
 
 
 def _resolve_profile_path() -> str:
-    """The profile path the sync verb uses: package config first, then cwd."""
-    profile_path = os.path.join(os.path.dirname(__file__), "..", "config", "profile.json")
+    """The profile path the sync verb uses: cwd config first, then the package.
+
+    The documented place to register projects is ``./config/profile.json`` in
+    the working directory. The package ships its own ``config/profile.json``,
+    which an editable install always has beside the code, so that copy is only
+    the fallback: resolved first, it shadowed the user's own projects.
+    """
+    profile_path = "config/profile.json"
     if not os.path.exists(profile_path):
-        profile_path = "config/profile.json"
+        profile_path = os.path.join(os.path.dirname(__file__), "..", "config", "profile.json")
     return profile_path
 
 
@@ -990,9 +996,9 @@ def sync(
     """Sync registered projects and aggregate into the global narrative.
 
     ``on_line`` receives the transcript exactly as the CLI has always
-    printed it. ``profile_path`` overrides the default resolution (package
-    ``config/profile.json`` first, then ``config/profile.json`` in the
-    cwd), which keeps hermetic callers off the developer's real profile.
+    printed it. ``profile_path`` overrides the default resolution
+    (``config/profile.json`` in the cwd first, then the package's own),
+    which keeps hermetic callers off the developer's real profile.
     """
 
     def say(text: str, err: bool = False) -> None:
