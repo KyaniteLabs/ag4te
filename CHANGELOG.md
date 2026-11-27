@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Validate installed history HTML without a source-relative Node dependency.
 - Correct package/documentation metadata to Apache-2.0. Released under Apache-2.0 since 2026-06-02 (PR #54); the initial MIT grant from 2026-04-29 remains in effect for copies obtained before that date.
 - Add installed-wheel checks to native Python3.12 CI and remove suppressed CI failures.
+- `devarch fetch-github` accepts the README's positional `<owner>` form and keeps `--owner` and `ARCHAEOLOGY_GITHUB_OWNER`. A missing owner, a blank owner, or a fetch that returns no repositories now fails with a clear error instead of writing an empty dataset, and an existing `github-repos.json` is left untouched; the CLI hints name the owner the command needs.
 
 ## [0.4.0] - 2026-10-01 — Evidence integrity
 

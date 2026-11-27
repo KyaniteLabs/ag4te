@@ -9,6 +9,10 @@ from pathlib import Path
 _DEFAULT_OWNER = os.environ.get("ARCHAEOLOGY_GITHUB_OWNER", "")
 
 
+class GitHubFetchError(RuntimeError):
+    """A fetch cannot produce a dataset, so the caller must not write one."""
+
+
 def _gh(*args):
     """Run a gh command and return stdout."""
     result = subprocess.run(["gh"] + list(args), capture_output=True, text=True)
@@ -70,9 +74,17 @@ def fetch_all_repos(owner=_DEFAULT_OWNER, limit=None):
     """Fetch all repos with commit counts, languages, and authors.
 
     Args:
-        owner: GitHub username or organization.
+        owner: GitHub username or organization. Required: an empty owner would
+            only list the authenticated account and build ``repos//...`` API
+            paths, so it fails before any GitHub call.
         limit: Maximum number of repos to fetch (None for all).
+
+    Raises:
+        GitHubFetchError: If the owner is blank.
     """
+    owner = (owner or "").strip()
+    if not owner:
+        raise GitHubFetchError("GitHub owner is empty: pass a username or organization")
     # Use a high limit to get all repos (gh repo list handles pagination internally)
     repo_limit = limit if limit else 10000
     raw = _gh(
@@ -152,8 +164,19 @@ def fetch_all_repos(owner=_DEFAULT_OWNER, limit=None):
 
 
 def save_github_data(output_path, owner=_DEFAULT_OWNER):
-    """Fetch all repo data and save to JSON."""
+    """Fetch all repo data and save to JSON.
+
+    Raises:
+        GitHubFetchError: If the owner is blank or the fetch returned no repos.
+            Nothing is written in either case, so a previous dataset survives.
+    """
+    owner = (owner or "").strip()
     repos = fetch_all_repos(owner=owner)
+    if not repos:
+        raise GitHubFetchError(
+            f"Fetched 0 repos for owner {owner!r}; nothing was written to {output_path}. "
+            "Check the owner and that `gh auth status` reports a login."
+        )
     output = {
         "owner": owner,
         "total_repos": len(repos),

@@ -167,6 +167,8 @@ devarch audit my-project --fail-on MEDIUM
 - `devarch multi-project-dashboard [--output] [--top] [--year]` -- Generate a multi-project dashboard
 - `devarch fetch-github <owner> [--output]` -- Fetch repository metadata from GitHub
 
+`fetch-github` also accepts `--owner <owner>` or `ARCHAEOLOGY_GITHUB_OWNER` instead of the positional owner. A missing owner, or a fetch that returns no repositories, exits non-zero and writes nothing; an existing `github-repos.json` is left untouched.
+
 ### Local Pipeline
 - `devarch local-pipeline <repo-name> [--pipeline-dir] [--repos-dir] [--run]` -- Inspect local GitHub pipeline
 
